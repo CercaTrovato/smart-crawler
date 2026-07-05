@@ -347,6 +347,8 @@ def build_envelope(extraction, target, source_type, final_url, fetch_meta=None):
     if extract_error:
         agent_notes += "（抽取降级：%s）" % extract_error
     agent_notes += " 字段经严格白名单正过滤 + 别名映射归一；抽不到进 missing_fields，未编造；以官网为准。"
+    if "university_id" in missing:  # §QC-F9：缺父院校关联时在摘要里点明，便于监督 agent 一眼留意（不强行 block）
+        agent_notes += " ⚠️ 项目缺父院校关联 university_id，入库前须补。"
 
     envelope = {
         "task_type": task_type,

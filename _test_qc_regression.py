@@ -57,6 +57,12 @@ check("F7 missing_fields仅字符串", all(isinstance(x, str) for x in env7["mis
 env10 = build_envelope(None, {"type": "programme", "university_id": "u1"}, "official", "https://x.ac.uk")
 check("F10 非dict抽取有降级告警", any(("degrad" in json.dumps(w, ensure_ascii=False)) or ("invalid" in json.dumps(w, ensure_ascii=False)) or ("降级" in json.dumps(w, ensure_ascii=False)) for w in env10["warnings"]), env10["warnings"])
 
+# F9（用户要求）：programme 缺 university_id → agent_notes 摘要醒目提示，便于监督 agent 留意
+env_f9 = build_envelope({"programme": "MSc X", "direction": "cs"}, {"type": "programme"}, "official", "https://x.ac.uk")
+check("F9 缺university_id摘要提示", ("university_id" in env_f9["agent_notes"]) and ("父院校" in env_f9["agent_notes"]), env_f9["agent_notes"][-50:])
+env_f9b = build_envelope({"programme": "MSc X", "direction": "cs"}, {"type": "programme", "university_id": "u1"}, "official", "https://x.ac.uk")
+check("F9 有university_id不提示", "父院校" not in env_f9b["agent_notes"])
+
 # F4 幻觉 url 不顶替可信 final_url（去宽泛 exact 键）
 env4 = build_envelope({"programme": "MSc X", "direction": "cs", "url": "https://hallucinated.evil/pdf"},
                       {"type": "programme", "university_id": "u1"}, "official", "https://real.ac.uk/prog")
@@ -177,6 +183,22 @@ _sp2 = os.path.join(tempfile.mkdtemp(prefix="qcst-"), "state.json")
 _st2 = scheduler.State(_sp2, enabled=True)
 asyncio.run(_st2.mark_done("k1", "/p"))
 check("F21 resume=True仍写state", os.path.exists(_sp2))
+
+# F20（用户要求）：失败不算完成(--resume 会重试) + 失败次数累计 + 兼容旧格式
+async def _f20():
+    _p = os.path.join(tempfile.mkdtemp(prefix="qcf20-"), "state.json")
+    st = scheduler.State(_p, enabled=True)
+    await st.mark_failed("kx", 1, "boom")
+    check("F20 失败不算done(会重试)", st.is_done("kx") == False)
+    check("F20 prior_failures计数=1", st.prior_failures("kx") == 1)
+    await st.mark_failed("kx", 2, "boom2")
+    check("F20 失败计数累加=2", st.prior_failures("kx") == 2)
+    await st.mark_done("kx", "/p")
+    check("F20 成功后算done", st.is_done("kx") == True)
+    check("F20 成功后清失败计数", st.prior_failures("kx") == 0)
+    st.done["old_fmt"] = {"payload": "/p", "at": "x"}  # 旧格式无 status
+    check("F20 兼容旧state格式(无status当done)", st.is_done("old_fmt") == True)
+asyncio.run(_f20())
 
 print("\n== 汇总 ==  PASS=%d  FAIL=%d" % (len(_PASS), len(_FAIL)))
 if _FAIL:

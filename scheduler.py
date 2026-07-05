@@ -97,13 +97,35 @@ class State:
             self.done = _load_json_or_warn(path, "断点续跑 state")
 
     def is_done(self, key):
-        return self.enabled and key in self.done
+        # §QC-F20：只有"真抓到数据"(status=done)才算完成；失败记录(status=failed)不跳过、--resume 会重试。
+        # 兼容旧格式（无 status 字段的记录视为 done）。
+        if not self.enabled:
+            return False
+        v = self.done.get(key)
+        return isinstance(v, dict) and v.get("status", "done") == "done"
+
+    def prior_failures(self, key):
+        """该 key 之前累计失败次数（§QC-F20，供产物标注"第 N 次抓取失败"）。"""
+        v = self.done.get(key)
+        if isinstance(v, dict) and v.get("status") == "failed":
+            return int(v.get("attempts", 0) or 0)
+        return 0
 
     async def mark_done(self, key, payload_path):
         if not self.enabled:  # §QC-F21：resume 关闭时不维护 state.json（否则下次 --resume 读到非预期完成记录被跳过）
             return
         async with self._lock:
-            self.done[key] = {"payload": payload_path,
+            self.done[key] = {"status": "done", "payload": payload_path,
+                              "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+            self._flush()
+
+    async def mark_failed(self, key, attempts, reason):
+        """§QC-F20：记录抓取失败（不算完成，--resume 会重试）；attempts 累计供产物标注"第 N 次失败"。"""
+        if not self.enabled:
+            return
+        async with self._lock:
+            self.done[key] = {"status": "failed", "attempts": int(attempts),
+                              "last_reason": str(reason)[:150],
                               "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             self._flush()
 
@@ -286,6 +308,7 @@ async def run_targets(targets, cfg, extract_fn, schema_provider, resume=False, o
         rec["tier_log"] = fetch_res.get("tier_log", [])
 
         source_type = _source_type_for(target)
+        prior_fail = state.prior_failures(key)  # §QC-F20：resume 时该目标此前累计失败次数
 
         if fetch_res["usable"]:
             schema, instructions = schema_provider(target.get("type", "programme"))
@@ -303,16 +326,24 @@ async def run_targets(targets, cfg, extract_fn, schema_provider, resume=False, o
                 target, source_type, fetch_res["final_url"] or target["url"],
                 fetch_meta={"tier_used": None, "attempts": fetch_res["attempts"]})
             envelope["import_recommendation"] = "manual_completion_required"
+            # §QC-F20：累计失败次数，重试后仍失败则标"第 N 次抓取失败"，让验收 agent 知晓续跑重试仍未成。
+            cur_fail = prior_fail + 1
+            fail_msg = fetch_res["reason"] if cur_fail == 1 else (
+                "第 %d 次抓取失败（含 --resume 重试）：%s" % (cur_fail, fetch_res["reason"]))
             envelope.setdefault("warnings", []).append(
-                {"warning_type": "fetch_failed", "message": fetch_res["reason"]})
+                {"warning_type": "fetch_failed", "message": fail_msg})
 
-        # 产物落盘 → 之后才标 done（§11-E）
+        # 产物落盘 → 之后才更新 state（§11-E）
         payload_path = await asyncio.to_thread(write_payload, envelope, out_dir, key)
         rec["payload"] = payload_path
         rec["import_recommendation"] = envelope["import_recommendation"]
         rec["data_confidence"] = envelope["data_confidence"]
         rec["missing_fields"] = envelope["missing_fields"]
-        await state.mark_done(key, payload_path)
+        # §QC-F20：仅"真抓到数据"标 done；失败的记 failed（不跳过），--resume 会重试。
+        if fetch_res["usable"]:
+            await state.mark_done(key, payload_path)
+        else:
+            await state.mark_failed(key, prior_fail + 1, fetch_res["reason"])
 
         async with results_lock:
             results.append(rec)
