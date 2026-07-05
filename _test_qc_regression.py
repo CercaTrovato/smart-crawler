@@ -111,6 +111,10 @@ check("F13 短challenge页仍blocked", looks_blocked(200, "Attention Required! P
 # F11修正（验收发现的回归）：&nbsp; 须归一为普通空格，否则 "entry requirements" 等多词关键词子串失配
 _nbsp_txt = html_to_text("<p>Entry&nbsp;requirements and English&nbsp;language.</p>")
 check("F11修正 nbsp归一为空格", ("entry requirements" in _nbsp_txt.lower()) and ("\xa0" not in _nbsp_txt), repr(_nbsp_txt))
+# wbr（中文输出验证发现）：零宽换行标记删除而非转空格，保护 URL 不被拆成 "leeds .ac .uk"
+check("wbr删除不拆URL", html_to_text("leeds<wbr>.ac<wbr>.uk") == "leeds.ac.uk", repr(html_to_text("leeds<wbr>.ac<wbr>.uk")))
+check("wbr成对标签删除(wikipedia实际)", html_to_text("leeds<wbr></wbr>.ac<wbr></wbr>.uk") == "leeds.ac.uk", repr(html_to_text("leeds<wbr></wbr>.ac<wbr></wbr>.uk")))
+check("wbr零宽字符清理", html_to_text("a​b‌c­d") == "abcd", repr(html_to_text("a​b‌c­d")))
 
 # ================= config.py =================
 import importlib

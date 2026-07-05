@@ -14,6 +14,10 @@ _RE_STYLE = re.compile(r"<style[\s\S]*?</style>", re.I)
 _RE_NOSCRIPT = re.compile(r"<noscript[\s\S]*?</noscript>", re.I)
 _RE_COMMENT = re.compile(r"<!--[\s\S]*?-->")
 _RE_BLOCKTAG = re.compile(r"<(br|/p|/div|/li|/h[1-6]|/tr)[^>]*>", re.I)
+# §QC-wbr（中文输出验证发现）：<wbr> 是零宽换行标记，应删除而非转空格——否则 wikipedia 用 <wbr> 分隔的
+# URL（leeds<wbr>.ac<wbr>.uk）会被 _RE_TAG 拆成 "leeds .ac .uk"。unescape 后再清一遍同类零宽字符。
+_RE_WBR = re.compile(r"</?wbr\s*/?>", re.I)  # <wbr> / <wbr/> / </wbr>（wikipedia 实际用成对 <wbr></wbr>，闭标签也要删）
+_RE_ZEROWIDTH = re.compile(r"[​‌‍﻿­]")  # ZWSP/ZWNJ/ZWJ/BOM/soft-hyphen
 _RE_TAG = re.compile(r"<[^>]{0,4096}+>")  # §QC-F14 possessive 限长：消除大量无闭合 < 串的 O(n²) 回溯（配合入口截断）
 _RE_WS = re.compile(r"[^\S\n]+")  # §QC-F11修正：塌缩所有非换行空白（含 html.unescape 出的 &nbsp;→U+00A0），否则多词关键词子串匹配失配
 _RE_NL_TRIM = re.compile(r" *\n *")
@@ -32,10 +36,12 @@ def html_to_text(html):
     s = _RE_NOSCRIPT.sub(" ", s)
     s = _RE_COMMENT.sub(" ", s)
     s = _RE_BLOCKTAG.sub("\n", s)
+    s = _RE_WBR.sub("", s)  # §QC-wbr：零宽换行标记删除（不转空格），保护 URL/长词不被拆开
     s = _RE_TAG.sub(" ", s)
     # §QC-F11：标准库 html.unescape 一次性解码命名/十进制/十六进制实体，越界码点安全降级 U+FFFD
     # （原手写 chr(int(&#N;)) 遇 N>0x10FFFF 抛 ValueError/OverflowError，冒泡出 score→escalate 无 try 包裹）。
     s = _html_mod.unescape(s)
+    s = _RE_ZEROWIDTH.sub("", s)  # §QC-wbr：清理 unescape 出的零宽字符（ZWSP/BOM/soft-hyphen），同理不留痕
     s = _RE_WS.sub(" ", s)
     s = _RE_NL_TRIM.sub("\n", s)
     s = _RE_NL_COLLAPSE.sub("\n\n", s)

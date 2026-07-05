@@ -88,7 +88,10 @@ _PROGRAMME_SCHEMA = {
 _UNIVERSITY_INSTR = (
     "You are a study-abroad university data extractor. Extract only facts present in the text. "
     "name_cn must be Simplified Chinese if present; otherwise omit and add to missing_fields. "
-    "country can be English name. Never fabricate."
+    "country can be English name. Never fabricate. "
+    # 值层语言（中文输出修改意见 2026-07-05）：自由文本转简体中文，名称/URL 保原样（code 类前端另有映射）
+    "Output introduction, city, and each item of strength_subjects in Simplified Chinese. "
+    "Keep name_en and official_website verbatim (name_cn is already Chinese)."
 )
 _PROGRAMME_INSTR = (
     "You are a study-abroad master programme data extractor. Map direction to enum "
@@ -96,7 +99,17 @@ _PROGRAMME_INSTR = (
     "media/communication->media, law->law, engineering->engineering, science->science, "
     "social->social_science, art/design->art, education->education, else->other). "
     "Convert IELTS scores to numbers; none/not-required->null. "
-    "gre_gmat_requirement use not_required/optional/required. Extract only facts in the text; never fabricate."
+    "gre_gmat_requirement use not_required/optional/required. Extract only facts in the text; never fabricate. "
+    # 值层语言（中文输出修改意见 2026-07-05）：选择性把自由文本转简体中文，数字/名称/枚举码/URL 严格保原样
+    "Output the VALUES of these fields in Simplified Chinese (faithful translation/summary): "
+    "programme_intro, academic_requirement, language_note, faculty. "
+    "PRESERVE EXACTLY (do not alter when translating): all numbers, IELTS/GPA scores, dates, "
+    "currency amounts, and proper names. "
+    "For tuition_label and deadline_label: keep numbers/dates/currency verbatim, surrounding words may be Chinese. "
+    "Keep VERBATIM / do NOT translate: name (official English name), degree, direction, study_mode, "
+    "gre_gmat_requirement, min_grade_band codes (e.g. \"2:1\" / \"WAM 65%\"), "
+    "ielts_total, ielts_sub_min, tuition_fee, official_url. "
+    "Never fabricate; if not in the text, omit and add to missing_fields."
 )
 
 
