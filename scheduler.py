@@ -76,6 +76,15 @@ def make_task_key(target):
     return "%s|%s" % (ttype, nurl)
 
 
+def _safe_task_key(target):
+    """对可能畸形（非 dict / 缺 url）的 target 也稳定产 key（§QC-F15/F16 失败隔离健壮性）。"""
+    if isinstance(target, dict) and target.get("url"):
+        return make_task_key(target)
+    if isinstance(target, dict):
+        return "%s|(no-url)" % target.get("type", "programme")
+    return "invalid|%r" % (target,)
+
+
 class State:
     """已完成任务集合，落盘 state.json。只在产物落盘后标完成。"""
 
@@ -91,6 +100,8 @@ class State:
         return self.enabled and key in self.done
 
     async def mark_done(self, key, payload_path):
+        if not self.enabled:  # §QC-F21：resume 关闭时不维护 state.json（否则下次 --resume 读到非预期完成记录被跳过）
+            return
         async with self._lock:
             self.done[key] = {"payload": payload_path,
                               "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
@@ -320,15 +331,17 @@ async def run_targets(targets, cfg, extract_fn, schema_provider, resume=False, o
             try:
                 await process(target)
             except Exception as e:
-                # 失败隔离（§0.4/§11-D）：单目标处理异常（如 write_payload OSError）不拖垮整批，记 needs_manual 后继续。
+                # 失败隔离（§0.4/§11-D + §QC-F16）：单目标处理异常不拖垮整批；except 块本身不依赖
+                # target 结构（target 可能非 dict/缺 url），避免二次抛异常击穿隔离。
+                _t = target if isinstance(target, dict) else {}
                 async with results_lock:
                     results.append({
                         "target": target,
-                        "task_key": make_task_key({"type": target.get("type", "programme"), "url": target.get("url", "")}),
+                        "task_key": _safe_task_key(target),
                         "fetch": {"usable": False, "tier_used": None, "status": 0, "ms_total": 0,
                                   "needs_manual": True, "attempts": 0,
                                   "reason": "内部处理异常：%s" % str(e)[:150],
-                                  "final_url": target.get("url", "")},
+                                  "final_url": _t.get("url", "")},
                         "tier_log": [], "import_recommendation": "manual_completion_required",
                         "data_confidence": "", "missing_fields": [],
                     })
@@ -337,8 +350,7 @@ async def run_targets(targets, cfg, extract_fn, schema_provider, resume=False, o
 
     n_workers = min(conc["global"], len(targets)) or 1
     await asyncio.gather(*(worker() for _ in range(n_workers)))
-    # 按输入顺序稳定排序（完成序不定）
-    order = {make_task_key({"type": t.get("type", "programme"), "url": t["url"]}): i
-             for i, t in enumerate(targets)}
+    # 按输入顺序稳定排序（完成序不定）。§QC-F15：用 _safe_task_key，缺 url/非 dict 不抛 KeyError 丢整批。
+    order = {_safe_task_key(t): i for i, t in enumerate(targets)}
     results.sort(key=lambda r: order.get(r["task_key"], 1e9))
     return results, {"credit_remaining": credit_gate.remaining}

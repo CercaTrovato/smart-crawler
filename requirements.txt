@@ -3,4 +3,4 @@
 scrapling[fetchers]>=0.4.9
 # 抽取 openai-compat 后端用（codex 后端走外部 CLI，无需此依赖）
 httpx>=0.27
-# 装完还需下浏览器： <env-python> -m scrapling install  （Chromium+patchright ~150MB+）
+# 装完还需下浏览器： <venv>\Scripts\scrapling install  （console script；注意 `-m scrapling` 不可用、scrapling 无 __main__；Chromium+patchright ~150MB+）

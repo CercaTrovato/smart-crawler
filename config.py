@@ -29,6 +29,14 @@ def _clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
+def _safe_int(v, default):
+    """§QC-F23：容错取整（非数值/None → default），避免 config 显式写 null/字符串致 int() 抛异常冒泡。"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def _codex_available():
     return shutil.which("codex") is not None
 
@@ -50,8 +58,11 @@ def load_config(path=None, cli_concurrency=None):
         else:
             raise ConfigError("找不到 crawler.config.json（也无 example 回退）：%s" % path)
 
-    with open(path, "r", encoding="utf-8") as f:
-        cfg = json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:  # §QC-F35 utf-8-sig 容忍手写文件的 BOM
+            cfg = json.load(f)
+    except (OSError, ValueError) as e:  # §QC-F30：坏/不可读 config 友好报错（ValueError 含 JSONDecodeError）
+        raise ConfigError("crawler.config.json 读取/解析失败（%s）：%s" % (os.path.basename(path), str(e)[:100]))
 
     warnings = []
 
@@ -91,6 +102,10 @@ def load_config(path=None, cli_concurrency=None):
         if not _codex_available():
             raise ConfigError("llm.provider=codex 但 codex 不在 PATH。装 codex 或改用 openai-compat。")
     elif provider == "openai-compat":
+        try:
+            import httpx  # noqa: F401
+        except Exception as e:  # §QC-F26：openai-compat 依赖 httpx，缺则明确报错（对称 scrapling 自检）
+            raise ConfigError("openai-compat 需 httpx 但导入失败：%s（pip install httpx）。" % str(e)[:80])
         base_env = llm.get("baseUrlEnv") or llm.get("baseURLEnv")
         key_env = llm.get("apiKeyEnv")
         if not _has_env(base_env):
@@ -101,24 +116,29 @@ def load_config(path=None, cli_concurrency=None):
     else:
         raise ConfigError("未知 llm.provider '%s'（支持 codex / openai-compat）。" % provider)
 
+    # §QC-F23：llm 数值字段统一兜底（原 extract.py 里 int(非数值) 在 try 外，坏配置会抛异常冒泡整批）。
+    _def_to = 180000 if provider == "codex" else 60000
+    llm["timeoutMs"] = _safe_int(llm.get("timeoutMs", _def_to), _def_to)
+    llm["maxRetry"] = _clamp(llm.get("maxRetry", 2), 1, 5)
+
     # —— 并发参数规范化（clamp） —— #
     conc = cfg.setdefault("concurrency", {})
     cmin = _clamp(conc.get("min", 1), 1, 32)
-    cmax = _clamp(conc.get("max", 32), cmin, 64)
+    cmax = _clamp(conc.get("max", 32), cmin, 32)  # §QC-F31 上限 32（原 64 超 CLI/§11-J 承诺 clamp[1,32]）
     gval = cli_concurrency if cli_concurrency is not None else conc.get("global", 8)
     conc["global"] = _clamp(gval, cmin, cmax)
     conc["min"] = cmin
     conc["max"] = cmax
-    conc["browserCap"] = _clamp(conc.get("browserCap", 4), 1, 16)
-    conc["firecrawlCap"] = _clamp(conc.get("firecrawlCap", 2), 1, 8)
+    conc["browserCap"] = _clamp(conc.get("browserCap", 4), 1, 4)  # §QC-F31 上限 4（§11-D browserSem≤4，弱机防 OOM）
+    conc["firecrawlCap"] = _clamp(conc.get("firecrawlCap", 2), 1, 2)  # §QC-F31 上限 2（§11-D firecrawlSem≤2）
 
     # —— 礼貌 / 重试 / 预算 默认兜底 —— #
     pol = cfg.setdefault("politeness", {})
     pol["perDomain"] = _clamp(pol.get("perDomain", 2), 1, 8)
-    pol["minDelayMs"] = int(pol.get("minDelayMs", 1500))
+    pol["minDelayMs"] = _safe_int(pol.get("minDelayMs", 1500), 1500)  # §QC-F23 防 null/非数值 int() 崩
     rt = cfg.setdefault("retry", {})
     rt["perTier"] = _clamp(rt.get("perTier", 2), 1, 5)
-    rt["backoffMs"] = int(rt.get("backoffMs", 1500))
+    rt["backoffMs"] = _safe_int(rt.get("backoffMs", 1500), 1500)  # §QC-F23
     rt["maxAttemptsPerTarget"] = _clamp(rt.get("maxAttemptsPerTarget", 6), 1, 20)
     cfg.setdefault("firecrawlBudget", {}).setdefault("maxCredits", 200)
     cfg.setdefault("network", {}).setdefault("bypassProxyForFetch", True)

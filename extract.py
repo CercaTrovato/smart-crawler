@@ -21,14 +21,10 @@ import tempfile
 def _extract_codex(text, schema, instructions, cfg):
     """subprocess 调 codex，正文走 stdin，schema/结果走临时文件（移植 codex-extract.js）。"""
     llm = cfg.get("llm", {})
-    # Windows 下 codex 是 .CMD 包装，shell=False 需完整路径解析（否则 WinError 2）。
-    codex_exe = shutil.which("codex") or "codex"
-    timeout_s = int(llm.get("timeoutMs", 180000)) / 1000.0
-    tmpdir = tempfile.mkdtemp(prefix="codex-x-")
-    schema_file = os.path.join(tmpdir, "schema.json")
-    out_file = os.path.join(tmpdir, "out.json")
-    with open(schema_file, "w", encoding="utf-8") as f:
-        json.dump(schema, f, ensure_ascii=False)
+    # §QC-F28：codex 不在 PATH 时明确报错（不与"out_file 缺失"混为一谈）。
+    codex_exe = shutil.which("codex")
+    if not codex_exe:
+        return {"__extract_error__": "codex-not-found-in-path"}
 
     prompt = (
         (instructions or "Extract fields from the <stdin> webpage text strictly per the JSON Schema.")
@@ -38,14 +34,22 @@ def _extract_codex(text, schema, instructions, cfg):
         + " missing_fields and omit that field. Never fabricate values."
     )
 
-    # shell=False + 参数列表：避免 shell 注入面（prompt/schema 路径含引号/元字符时脆弱转义会破，🟡7）。
-    cmd = [
-        codex_exe, "exec", "--skip-git-repo-check", "--ephemeral",
-        "-s", "read-only", "--color", "never",
-        "--output-schema", schema_file, "-o", out_file, prompt,
-    ]
+    tmpdir = None
     try:
-        subprocess.run(
+        # §QC-F24：mkdtemp + schema 落盘纳入 try/finally（原在 try 外，落盘失败会泄漏 tmpdir + 异常冒泡出 extract）。
+        timeout_s = int(llm.get("timeoutMs", 180000)) / 1000.0
+        tmpdir = tempfile.mkdtemp(prefix="codex-x-")
+        schema_file = os.path.join(tmpdir, "schema.json")
+        out_file = os.path.join(tmpdir, "out.json")
+        with open(schema_file, "w", encoding="utf-8") as f:
+            json.dump(schema, f, ensure_ascii=False)
+        # shell=False + 参数列表：避免 shell 注入面（prompt/schema 路径含引号/元字符时脆弱转义会破，🟡7）。
+        cmd = [
+            codex_exe, "exec", "--skip-git-repo-check", "--ephemeral",
+            "-s", "read-only", "--color", "never",
+            "--output-schema", schema_file, "-o", out_file, prompt,
+        ]
+        proc = subprocess.run(
             cmd,
             input=text,
             timeout=timeout_s,
@@ -55,22 +59,23 @@ def _extract_codex(text, schema, instructions, cfg):
             encoding="utf-8",
             errors="ignore",
         )
-        with open(out_file, "r", encoding="utf-8") as f:
-            raw = f.read().strip()
+        try:
+            with open(out_file, "r", encoding="utf-8") as f:
+                raw = f.read().strip()
+        except FileNotFoundError:
+            # §QC-F27/F28：codex 未产出 out_file —— 附 returncode + stderr 尾段便于诊断（原静默当空抽取，丢诊断）。
+            tail = (proc.stderr or "").strip()[-120:]
+            return {"__extract_error__": "codex-no-output(rc=%s):%s" % (proc.returncode, tail)}
         return json.loads(raw) if raw else {}
     except subprocess.TimeoutExpired:
         return {"__extract_error__": "codex-timeout"}
-    except FileNotFoundError:
-        return {"__extract_error__": "codex-no-output-file"}
     except json.JSONDecodeError as e:
         return {"__extract_error__": "codex-bad-json:%s" % str(e)[:60]}
     except Exception as e:
         return {"__extract_error__": "codex-failed:%s" % str(e)[:80]}
     finally:
-        try:
+        if tmpdir:
             shutil.rmtree(tmpdir, ignore_errors=True)
-        except Exception:
-            pass
 
 
 # —— openai-compat 后端 —— #
@@ -102,6 +107,9 @@ def _extract_openai_compat(text, schema, instructions, cfg):
     timeout_s = int(llm.get("timeoutMs", 60000)) / 1000.0
     max_retry = int(llm.get("maxRetry", 2))
     json_mode = llm.get("jsonMode", "plain")  # openai_schema | ollama_format | plain
+    # §QC-F32：bypass 模式启动清了 HTTP(S)_PROXY 并设 NO_PROXY='*'，远程 openai-compat 端点会被强制直连；
+    # 提供 proxyEnv（默认 LLM_PROXY）显式逃生阀，让需代理出网的远程端点可达（本地/直连端点留空即可）。
+    proxy = os.environ.get(llm.get("proxyEnv", "LLM_PROXY")) or None
 
     messages = _build_messages(text, schema, instructions)
     payload = {"model": model, "messages": messages, "temperature": 0}
@@ -123,7 +131,10 @@ def _extract_openai_compat(text, schema, instructions, cfg):
     last_err = None
     for attempt in range(1, max_retry + 1):
         try:
-            with httpx.Client(timeout=timeout_s) as client:
+            client_kwargs = {"timeout": timeout_s}
+            if proxy:
+                client_kwargs["proxy"] = proxy  # §QC-F32
+            with httpx.Client(**client_kwargs) as client:
                 resp = client.post(url, headers=headers, json=payload)
             if resp.status_code != 200:
                 last_err = "http-%s" % resp.status_code
@@ -154,9 +165,11 @@ def _parse_json_loose(content):
     if a >= 0 and b > a:
         s = s[a:b + 1]
     try:
-        return json.loads(s)
+        obj = json.loads(s)
     except Exception as e:
         return {"__extract_error__": "parse-failed:%s" % str(e)[:60]}
+    # §QC-F25：只认对象——裸标量/数组/null 视为降级（原样返回会绕过 output 的 extract_error 检测，降级不可见）。
+    return obj if isinstance(obj, dict) else {"__extract_error__": "non-object-json:%s" % type(obj).__name__}
 
 
 def extract(text, json_schema, instructions, cfg):

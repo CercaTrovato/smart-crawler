@@ -7,7 +7,7 @@
   },
   "llm": {
     "provider": "codex",
-    "_openai_compat_example": { "provider": "openai-compat", "baseUrlEnv": "LLM_BASE_URL", "model": "qwen2.5", "apiKeyEnv": "LLM_API_KEY", "jsonMode": "openai_schema", "timeoutMs": 60000, "maxRetry": 2 }
+    "_openai_compat_example": { "provider": "openai-compat", "baseUrlEnv": "LLM_BASE_URL", "model": "qwen2.5", "apiKeyEnv": "LLM_API_KEY", "jsonMode": "openai_schema", "timeoutMs": 60000, "maxRetry": 2, "proxyEnv": "LLM_PROXY" }
   },
   "concurrency": { "global": 8, "min": 1, "max": 32, "browserCap": 4, "firecrawlCap": 2 },
   "politeness": { "perDomain": 2, "minDelayMs": 1500 },

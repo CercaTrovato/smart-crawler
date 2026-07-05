@@ -138,15 +138,15 @@ def write_run_report(results, meta, cfg, out_dir, elapsed_s):
         t = r["target"]
         if r.get("skipped"):
             lines.append("| %d | %s | %s | - | (resume 跳过) | - | - | - | - | %s |" % (
-                i, t.get("type"), _short(t["url"]), r.get("reason", "")))
+                i, t.get("type"), _cell(_short(t["url"])), _cell(r.get("reason", ""))))
             continue
         f = r.get("fetch", {})
         reason = f.get("reason", "") if f.get("needs_manual") else ""
         lines.append("| %d | %s | %s | %s | %s | %d | %.1fs | %s | %s | %s |" % (
-            i, t.get("type"), _short(t["url"]), f.get("tier_used") or "-",
+            i, t.get("type"), _cell(_short(t["url"])), f.get("tier_used") or "-",
             "✓" if f.get("usable") else "✗", f.get("attempts", 0),
             (f.get("ms_total", 0) / 1000.0), r.get("data_confidence", "-"),
-            r.get("import_recommendation", "-"), reason))
+            r.get("import_recommendation", "-"), _cell(reason)))
     lines.append("")
     lines.append("## 抓取档明细（tier_log）")
     lines.append("")
@@ -179,7 +179,18 @@ def _short(url):
     return url if len(url) <= 60 else url[:57] + "..."
 
 
+def _cell(v):
+    """§QC-F33：markdown 表格单元格转义 |（URL/needs_manual 原因含竖线会破表列）。"""
+    return str(v).replace("|", "\\|")
+
+
 def main():
+    # §QC-F36：Windows 控制台默认代码页（GBK/936）下中文 print 乱码；reconfigure stdout/stderr 为 utf-8。
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     # §11-I：Windows + asyncio + Playwright 必设 Proactor 策略。
     if sys.platform.startswith("win"):
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -206,17 +217,30 @@ def main():
     if cfg.get("network", {}).get("bypassProxyForFetch", True):
         _strip_proxy_env_once()
 
-    with open(args.targets, "r", encoding="utf-8") as f:
-        targets = json.load(f)
+    try:
+        with open(args.targets, "r", encoding="utf-8-sig") as f:  # §QC-F35 容忍 BOM
+            targets = json.load(f)
+    except (OSError, ValueError) as e:  # §QC-F30：坏/缺 targets 文件友好报错（原裸 open+json.load 抛栈 exit1）
+        print("[错误] targets 文件读取/解析失败：%s" % str(e)[:120], file=sys.stderr)
+        sys.exit(2)
     if not isinstance(targets, list) or not targets:
         print("[错误] targets 必须是非空 JSON 数组", file=sys.stderr)
         sys.exit(2)
 
     # §11-J：校验每条 type ∈ {university, programme}（归一后），非法即报错退出，不静默降级 programme。
+    from urllib.parse import urlparse
     _VALID_TYPES = ("university", "programme")
     for i, t in enumerate(targets):
         if not isinstance(t, dict) or not t.get("url"):
             print("[错误] targets[%d] 缺 url 或非对象：%r" % (i, t), file=sys.stderr)
+            sys.exit(2)
+        # §QC-F17：URL 须带 scheme + host，否则 urlparse().netloc 为空致按域限流塌缩进同一空桶（防封失效）。
+        _u = urlparse(str(t["url"]))
+        if not _u.scheme:
+            t["url"] = "https://" + str(t["url"]).lstrip("/")  # 缺 scheme 自动补 https://
+            _u = urlparse(t["url"])
+        if _u.scheme not in ("http", "https") or not _u.netloc:
+            print("[错误] targets[%d] url 非法（需 http(s)://host/...）：%r" % (i, t.get("url")), file=sys.stderr)
             sys.exit(2)
         raw_type = str(t.get("type", "")).strip().lower()
         if raw_type not in _VALID_TYPES:

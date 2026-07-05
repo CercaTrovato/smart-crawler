@@ -15,6 +15,7 @@
 
 task_id 不由核心背（§11-B）——投喂前另跑 createCollectionTask，本层不产 task_id。
 """
+import hashlib
 import json
 import os
 import re
@@ -62,9 +63,13 @@ def _country_from_text(text):
 def _to_num(v):
     if v is None or v == "":
         return None
-    m = re.sub(r"[^\d.]", "", str(v))
+    # 取第一个数字片段（含千分位逗号 + 可选小数）再解析：避免区间 "12,500-15,000" 被剥成
+    # "1250015000"（灾难性错误大数）、"7.5 (6.0)" 多点解析失败（§QC-F2/F3）。取区间下界，宁少勿错。
+    mm = re.search(r"\d[\d,]*(?:\.\d+)?", str(v))
+    if not mm:
+        return None
     try:
-        n = float(m)
+        n = float(mm.group(0).replace(",", ""))
         return n if n == n and n not in (float("inf"), float("-inf")) else None
     except ValueError:
         return None
@@ -104,8 +109,21 @@ def _conf_from_source(source_type):
 
 
 def _clean_item(item):
-    """剔空字段（空串/None 不塞，保持 item 干净；白名单外字段本就不在）。"""
-    return {k: v for k, v in item.items() if v not in ("", None)}
+    """剔空 + 白名单值层标量化（§11-B / §QC-F1）：值只保留标量或标量列表；dict 或含非标量的
+    复杂值一律丢弃——杜绝 LLM 让白名单字段藏嵌套 dict（其内部 is_simulated/status 等控制字段
+    会随 json.dump 落盘，绕过只查顶层键的断言，文本性突破"绝不产控制字段"红线）。"""
+    out = {}
+    for k, v in item.items():
+        if v in ("", None):
+            continue
+        if isinstance(v, (str, int, float, bool)):
+            out[k] = v
+        elif isinstance(v, (list, tuple)):
+            elems = [e for e in v if isinstance(e, (str, int, float, bool)) and e not in ("", None)]
+            if elems:
+                out[k] = elems
+        # dict / 其它复杂类型：丢弃，不落盘
+    return out
 
 
 # —— 院校信封（移植 university.js） —— #
@@ -155,7 +173,7 @@ def _build_university(raw, target, source_type, final_url):
         "qs_rank_label": _pick(raw, ["qs_rank_label", "qs_rank"], ["qs"]) or "",
         "strength_subjects": _norm_subjects(_pick(raw, ["strength_subjects", "subjects"], ["strength", "subject"])),
         # §11-F：官网抓取时落地 URL 本身即官网页，从 URL 直接回填。
-        "official_website": _pick(raw, ["official_website", "official_url", "website"], ["official", "website"])
+        "official_website": _pick(raw, ["official_website", "official_url"], ["official", "website"])  # §QC-F4 去宽泛键 website
         or final_url or "",
         "data_confidence": _conf_from_source(source_type),
         "data_source_url": final_url or _pick(raw, ["data_source_url"], []) or "",
@@ -184,7 +202,7 @@ def _build_programme(raw, target, source_type, final_url):
     for k, v in raw.items():
         if not re.search(r"name|title|program|programme", k, re.I):
             continue
-        if re.search(r"school|univ|college|institution", k, re.I):
+        if re.search(r"school|univ|college|institution|degree", k, re.I):  # §QC-F6 排除 degree_name 误当项目名
             continue
         if re.search(r"intro|summary|category|description|note|requirement|faculty", k, re.I):
             continue
@@ -221,7 +239,7 @@ def _build_programme(raw, target, source_type, final_url):
         "name": name,
         "name_cn": name_cn,
         "direction": direction,
-        "degree": _pick(raw, ["degree", "degree_type"], ["degree"]),
+        "degree": _pick(raw, ["degree", "degree_type"], None),  # §QC-F6 去 fuzzy，防误取 degree_requirement
         "programme_category": _pick(raw, ["programme_category", "project_category", "category"], ["category"]),
         "faculty": _pick(raw, ["faculty", "school", "department"], ["faculty"]),
         "duration": _normalize_duration(_pick(raw, ["duration", "length"], ["duration"])),
@@ -240,7 +258,7 @@ def _build_programme(raw, target, source_type, final_url):
         # 'gre' 不用 fuzzy（会误匹配 deGREe）
         "gre_gmat_requirement": _pick(raw, ["gre_gmat_requirement", "gre_gmat", "gre", "gmat"], None),
         # §11-F：官网采集时页面本身即官网页。
-        "official_url": _pick(raw, ["official_url", "programme_url", "url"], ["official", "url"]) or final_url or "",
+        "official_url": _pick(raw, ["official_url", "programme_url"], ["official", "url"]) or final_url or "",  # §QC-F4 去宽泛键 url
         "data_confidence": _conf_from_source(source_type),
         "data_source_url": final_url or _pick(raw, ["data_source_url"], []) or "",
     }
@@ -254,7 +272,7 @@ def _build_programme(raw, target, source_type, final_url):
     raw_missing = raw.get("missing_fields")
     if isinstance(raw_missing, list):
         for f in raw_missing:
-            if f not in missing:
+            if isinstance(f, str) and f and f not in missing:  # §QC-F7 只并入字符串，杜绝控制字段字样/垃圾串入
                 missing.append(f)
 
     blocked = (not name) or (not direction)
@@ -270,10 +288,13 @@ def _normalize_duration(raw):
         return s
     ft = "（全日制）" if re.search(r"full[\s-]*time", s, re.I) else (
         "（非全日制）" if re.search(r"part[\s-]*time", s, re.I) else "")
-    mm = re.search(r"(\d+)\s*months?", s, re.I)
+    mm = re.search(r"(\d+(?:\.\d+)?)\s*months?", s, re.I)  # §QC-F8 支持小数，防 "1.5 months" 回溯抓 "5 months"
     if mm:
-        n = int(mm.group(1))
-        base = ("%d 年" % (n // 12)) if n % 12 == 0 else ("%d 个月" % n)
+        fnum = float(mm.group(1))
+        if fnum > 0 and fnum == int(fnum) and int(fnum) % 12 == 0:
+            base = "%d 年" % (int(fnum) // 12)
+        else:
+            base = "%g 个月" % fnum
         return base + ft
     my = re.search(r"(\d+(?:\.\d+)?)\s*years?", s, re.I)
     if my:
@@ -295,8 +316,9 @@ def build_envelope(extraction, target, source_type, final_url, fetch_meta=None):
     fetch_meta = fetch_meta or {}
     ttype = target.get("type", "programme")
     extract_error = extraction.get("__extract_error__") if isinstance(extraction, dict) else None
-    # 抽取失败 → 降级：raw 视为空，全字段进 missing（output 层负责，绝不编造 §11-H）
-    raw = {} if extract_error else (extraction if isinstance(extraction, dict) else {})
+    extraction_invalid = not isinstance(extraction, dict)  # §QC-F10：非 dict（None/list/str）也是降级
+    # 抽取失败/非结构化 → 降级：raw 视为空，全字段进 missing（output 层负责，绝不编造 §11-H）
+    raw = {} if (extract_error or extraction_invalid) else extraction
 
     src_lang = "en"  # 本系统 targets 主为英文官网页；两类型同为 en。
     if ttype == "university":
@@ -309,10 +331,14 @@ def build_envelope(extraction, target, source_type, final_url, fetch_meta=None):
     if extract_error:
         warnings.append({"warning_type": "extract_degraded",
                          "message": "抽取降级（%s）：未抽到结构化字段，全部计入 missing_fields，未编造" % extract_error})
+    elif extraction_invalid:
+        warnings.append({"warning_type": "extract_degraded",
+                         "message": "抽取返回非结构化结果（%s），已降级：全部计入 missing_fields，未编造" % type(extraction).__name__})
 
-    # data_confidence 硬枚举，落盘前 assert（§11-C）
+    # data_confidence 硬枚举，落盘前硬校验（§11-C）。§QC-F5：用 raise 非 assert（防 python -O 剥离掉硬保证）。
     conf = _conf_from_source(source_type)
-    assert conf in CONF_ENUM, "data_confidence 非法：%r（防后台兜底成 simulated 永久卡审）" % conf
+    if conf not in CONF_ENUM:
+        raise ValueError("data_confidence 非法：%r（防后台兜底成 simulated 永久卡审）" % conf)
 
     agent_notes = (
         "smart-crawler 采集：tier=%s，尝试 %s 次，源类型=%s。"
@@ -362,17 +388,32 @@ _FORBIDDEN_ITEM_FIELDS = (
 
 
 def _assert_no_control_fields(envelope):
+    """落盘前硬校验 item（含嵌套 dict/list）不含控制/运营字段（§11-B）。
+    §QC-F5：用 raise 非 assert（防 -O 剥离）；§QC-F1：递归扫嵌套键（与 _clean_item 标量化双保险）。"""
+    def _scan(obj):
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k in _FORBIDDEN_ITEM_FIELDS:
+                    raise ValueError("产物含控制/运营字段 '%s'（核心绝不产出，§11-B）" % k)
+                _scan(v)
+        elif isinstance(obj, (list, tuple)):
+            for e in obj:
+                _scan(e)
     for it in envelope.get("items", []):
-        for f in _FORBIDDEN_ITEM_FIELDS:
-            assert f not in it, "产物 item 含控制/运营字段 '%s'（核心绝不产出，§11-B）" % f
+        _scan(it)
 
 
 def write_payload(envelope, out_dir, task_key):
-    """落盘 out/payload-*.json。返回文件路径。"""
+    """落盘 out/payload-*.json（原子写）。返回文件路径。"""
     os.makedirs(out_dir, exist_ok=True)
     safe = re.sub(r"[^0-9A-Za-z._-]", "_", task_key)[:80]
-    fname = "payload-%s-%s.json" % (safe, time.strftime("%Y%m%d-%H%M%S"))
+    # §QC-F18：文件名并入 task_key 短哈希，防 safe[:80] 截断碰撞 / 秒级时间戳同秒覆盖丢产物。
+    h = hashlib.sha1(task_key.encode("utf-8")).hexdigest()[:8]
+    fname = "payload-%s-%s-%s.json" % (safe, time.strftime("%Y%m%d-%H%M%S"), h)
     path = os.path.join(out_dir, fname)
-    with open(path, "w", encoding="utf-8") as f:
+    # §QC-F18：tmp + os.replace 原子落盘（对齐 scheduler._atomic_write_json，防半截/并发同名共享冲突）。
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(envelope, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
     return path

@@ -71,8 +71,11 @@ async def _do_fetch_with_resources(url, cfg, tier, res):
                 return None, "firecrawl-credit-exhausted"
             async with res.firecrawl_sem:
                 r = await fetch_one(url, cfg, tier)
-            # credit 退还（§11-D 4②）：请求没真发出（error 非空）或走了 stealthy 兜底（没调 firecrawl API）→ 退。
-            if r.get("error") or r.get("fallback") == "stealthy":
+            # credit 退还（§11-D 4② + §QC-F12）：请求没真发出/失败/走 stealthy 兜底 → 退。
+            # 关键修复：firecrawl 非-200（402/429/500）时 httpx 不抛异常、fetch_one 不置 error 但 ok=False，
+            # Firecrawl 对失败抓取不计费——原条件只认 error/stealthy 会漏退，致本地预算被幽灵消耗、
+            # 后续目标被 credit-exhausted 误拒。按 "not ok" 退还（200-空 markdown 仍 ok=True 属真消费，不退）。
+            if (not r.get("ok")) or r.get("fallback") == "stealthy":
                 await res.credit_gate.refund(_FIRECRAWL_STEALTH_COST)
             return r, None
         else:  # http-tls
