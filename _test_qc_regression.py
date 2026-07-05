@@ -25,9 +25,11 @@ check("F3 _to_num总分(小分)", _to_num("7.5 (6.0)") == 7.5, _to_num("7.5 (6.0
 check("_to_num常规千分位", _to_num("25,000") == 25000 and _to_num("1,234.56") == 1234.56)
 check("_to_num纯文字None", _to_num("N/A") is None)
 
-# F8 小数 months 不回溯
-check("F8 duration小数months", _normalize_duration("1.5 months") != "5 个月", _normalize_duration("1.5 months"))
-check("F8 duration正常不回归", _normalize_duration("12 Months (Full time)") == "1 年（全日制）")
+# F8 小数 months 不回溯（zh 档才走中文转换路径）
+check("F8 duration小数months", _normalize_duration("1.5 months", "zh") != "5 个月", _normalize_duration("1.5 months", "zh"))
+check("F8 duration正常不回归", _normalize_duration("12 Months (Full time)", "zh") == "1 年（全日制）")
+# 公开化：lang=en（默认）保留学制原文，不强转中文
+check("duration lang=en保原文", _normalize_duration("12 Months (Full time)") == "12 Months (Full time)", _normalize_duration("12 Months (Full time)"))
 
 # F1 嵌套控制字段不入产物（白名单值层标量化）
 env1 = build_envelope({"programme": "MSc Finance", "direction": "finance",
@@ -57,10 +59,10 @@ check("F7 missing_fields仅字符串", all(isinstance(x, str) for x in env7["mis
 env10 = build_envelope(None, {"type": "programme", "university_id": "u1"}, "official", "https://x.ac.uk")
 check("F10 非dict抽取有降级告警", any(("degrad" in json.dumps(w, ensure_ascii=False)) or ("invalid" in json.dumps(w, ensure_ascii=False)) or ("降级" in json.dumps(w, ensure_ascii=False)) for w in env10["warnings"]), env10["warnings"])
 
-# F9（用户要求）：programme 缺 university_id → agent_notes 摘要醒目提示，便于监督 agent 留意
-env_f9 = build_envelope({"programme": "MSc X", "direction": "cs"}, {"type": "programme"}, "official", "https://x.ac.uk")
+# F9（用户要求，studycompass 档特性）：programme 缺 university_id → agent_notes 摘要醒目提示，便于监督 agent 留意
+env_f9 = build_envelope({"programme": "MSc X", "direction": "cs"}, {"type": "programme"}, "official", "https://x.ac.uk", profile="studycompass")
 check("F9 缺university_id摘要提示", ("university_id" in env_f9["agent_notes"]) and ("父院校" in env_f9["agent_notes"]), env_f9["agent_notes"][-50:])
-env_f9b = build_envelope({"programme": "MSc X", "direction": "cs"}, {"type": "programme", "university_id": "u1"}, "official", "https://x.ac.uk")
+env_f9b = build_envelope({"programme": "MSc X", "direction": "cs"}, {"type": "programme", "university_id": "u1"}, "official", "https://x.ac.uk", profile="studycompass")
 check("F9 有university_id不提示", "父院校" not in env_f9b["agent_notes"])
 
 # F4 幻觉 url 不顶替可信 final_url（去宽泛 exact 键）

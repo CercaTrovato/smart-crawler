@@ -253,8 +253,6 @@ def _source_type_for(target):
     if target.get("source_type"):
         return target["source_type"]
     host = _domain_of(target["url"])
-    if re.search(r"compassedu", host):
-        return "competitor_aggregator"
     if "wikipedia.org" in host or "wikidata.org" in host:
         return "wikipedia"
     if _OFFICIAL_HOST_RE.search(host):
@@ -271,6 +269,10 @@ async def run_targets(targets, cfg, extract_fn, schema_provider, resume=False, o
     """
     out_dir = out_dir or OUT_DIR
     from output import build_envelope, write_payload
+
+    out_cfg = cfg.get("output", {})
+    profile = out_cfg.get("profile", "generic")
+    lang = out_cfg.get("lang", "en")
 
     conc = cfg["concurrency"]
     browser_sem = asyncio.Semaphore(conc["browserCap"])
@@ -318,14 +320,16 @@ async def run_targets(targets, cfg, extract_fn, schema_provider, resume=False, o
             rec["extract_error"] = extraction.get("__extract_error__") if isinstance(extraction, dict) else None
             envelope = build_envelope(
                 extraction, target, source_type, fetch_res["final_url"],
-                fetch_meta={"tier_used": fetch_res["tier_used"], "attempts": fetch_res["attempts"]})
+                fetch_meta={"tier_used": fetch_res["tier_used"], "attempts": fetch_res["attempts"]},
+                profile=profile, lang=lang)
         else:
-            # 抓取失败 → 仍产 needs_manual 信封（空 item + 全 missing + 原因），绝不假成功（§0.4）。
+            # 抓取失败 → 仍产「需人工」信封（空 item + 全 missing + 原因），绝不假成功（§0.4）。
+            # raw 空→无 name→blocked，两 profile 各自给出正确的需人工信号，无需在此硬覆盖 import_recommendation。
             envelope = build_envelope(
                 {"__extract_error__": "fetch-failed:%s" % fetch_res["reason"]},
                 target, source_type, fetch_res["final_url"] or target["url"],
-                fetch_meta={"tier_used": None, "attempts": fetch_res["attempts"]})
-            envelope["import_recommendation"] = "manual_completion_required"
+                fetch_meta={"tier_used": None, "attempts": fetch_res["attempts"]},
+                profile=profile, lang=lang)
             # §QC-F20：累计失败次数，重试后仍失败则标"第 N 次抓取失败"，让验收 agent 知晓续跑重试仍未成。
             cur_fail = prior_fail + 1
             fail_msg = fetch_res["reason"] if cur_fail == 1 else (
@@ -336,9 +340,11 @@ async def run_targets(targets, cfg, extract_fn, schema_provider, resume=False, o
         # 产物落盘 → 之后才更新 state（§11-E）
         payload_path = await asyncio.to_thread(write_payload, envelope, out_dir, key)
         rec["payload"] = payload_path
-        rec["import_recommendation"] = envelope["import_recommendation"]
-        rec["data_confidence"] = envelope["data_confidence"]
-        rec["missing_fields"] = envelope["missing_fields"]
+        # 统一 review 信号供 run-report：generic 用 needs_manual，studycompass 用 import_recommendation。
+        rec["review_status"] = envelope.get("import_recommendation") or (
+            "needs_manual" if envelope.get("needs_manual") else "ok")
+        rec["data_confidence"] = envelope.get("data_confidence", "-")
+        rec["missing_fields"] = envelope.get("missing_fields", [])
         # §QC-F20：仅"真抓到数据"标 done；失败的记 failed（不跳过），--resume 会重试。
         if fetch_res["usable"]:
             await state.mark_done(key, payload_path)
@@ -373,7 +379,7 @@ async def run_targets(targets, cfg, extract_fn, schema_provider, resume=False, o
                                   "needs_manual": True, "attempts": 0,
                                   "reason": "内部处理异常：%s" % str(e)[:150],
                                   "final_url": _t.get("url", "")},
-                        "tier_log": [], "import_recommendation": "manual_completion_required",
+                        "tier_log": [], "review_status": "needs_manual",
                         "data_confidence": "", "missing_fields": [],
                     })
             finally:

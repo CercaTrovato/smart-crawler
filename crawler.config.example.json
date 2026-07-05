@@ -13,5 +13,6 @@
   "politeness": { "perDomain": 2, "minDelayMs": 1500 },
   "retry": { "perTier": 2, "backoffMs": 1500, "maxAttemptsPerTarget": 6 },
   "firecrawlBudget": { "maxCredits": 200 },
-  "network": { "bypassProxyForFetch": true }
+  "network": { "bypassProxyForFetch": true },
+  "output": { "profile": "generic", "lang": "en", "_note": "profile: generic(通用信封) | studycompass(内部 submitCollectionResult 契约)。lang: en(自由文本保原样) | zh(自由文本转简体中文)。均可被 CLI --profile/--lang 覆盖。" }
 }

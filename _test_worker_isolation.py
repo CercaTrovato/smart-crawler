@@ -10,8 +10,9 @@ async def fake_escalate(target, cfg, res):
             "attempts": 1, "tier_log": []}
 scheduler.escalate = fake_escalate
 
-# 假 build_envelope：返回最小合法信封。
-def fake_build_envelope(extraction, target, source_type, final_url, fetch_meta=None):
+# 假 build_envelope：返回最小合法信封（签名须跟随真实 build_envelope，含 profile/lang）。
+def fake_build_envelope(extraction, target, source_type, final_url, fetch_meta=None,
+                        profile="generic", lang="en"):
     return {"task_type": "collect_programmes", "target_name": "x", "source_summary": {},
             "data_confidence": "high", "items": [{}], "warnings": [], "conflicts": [],
             "missing_fields": [], "raw_evidence": [], "contains_privacy": False,

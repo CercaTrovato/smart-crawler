@@ -45,10 +45,12 @@ def _has_env(name):
     return bool(name) and bool(os.environ.get(name))
 
 
-def load_config(path=None, cli_concurrency=None):
+def load_config(path=None, cli_concurrency=None, cli_profile=None, cli_lang=None):
     """加载配置并做能力自检。返回规范化后的 dict（含 _capabilities / _warnings）。
 
     cli_concurrency：命令行 --concurrency，若给则覆盖 concurrency.global（clamp 到 [1,32]）。
+    cli_profile / cli_lang：命令行 --profile / --lang，覆盖 config 的 output.profile / output.lang。
+        优先级 CLI > config output.* > 代码默认（profile=generic, lang=en）。
     """
     path = path or CONFIG_PATH
     if not os.path.exists(path):
@@ -142,6 +144,22 @@ def load_config(path=None, cli_concurrency=None):
     rt["maxAttemptsPerTarget"] = _clamp(rt.get("maxAttemptsPerTarget", 6), 1, 20)
     cfg.setdefault("firecrawlBudget", {}).setdefault("maxCredits", 200)
     cfg.setdefault("network", {}).setdefault("bypassProxyForFetch", True)
+
+    # —— 输出档：profile（信封形态）+ lang（自由文本语言）—— #
+    # profile=generic（默认，通用信封，无任何下游专属键）｜studycompass（内部 submitCollectionResult 契约）。
+    # lang=en（默认，自由文本保源语言/原样）｜zh（自由文本转简体中文，数字/名称/枚举码/URL 仍保原样）。
+    # 优先级：CLI > config output.* > 代码默认。凭据无关，纯输出成形开关。
+    out = cfg.setdefault("output", {})
+    profile = str(cli_profile or out.get("profile") or "generic").lower()
+    if profile not in ("generic", "studycompass"):
+        warnings.append("未知 output.profile '%s'，回退 generic" % profile)
+        profile = "generic"
+    lang = str(cli_lang or out.get("lang") or "en").lower()
+    if lang not in ("en", "zh"):
+        warnings.append("未知 output.lang '%s'，回退 en" % lang)
+        lang = "en"
+    out["profile"] = profile
+    out["lang"] = lang
 
     cfg["_warnings"] = warnings
     return cfg

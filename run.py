@@ -85,38 +85,64 @@ _PROGRAMME_SCHEMA = {
     "required": ["missing_fields"],
 }
 
-_UNIVERSITY_INSTR = (
-    "You are a study-abroad university data extractor. Extract only facts present in the text. "
+# 抽取指令 = 领域规则（base，语言无关）+ 语言指令（--lang 决定）。
+# base 只讲"抽什么/怎么归一"；zh 追加"自由文本转简体中文"，en 追加"自由文本保源语言、不翻译"。
+# 无论哪档，数字/分数/日期/货币/名称/枚举码/URL 一律保原样（只对自由文本切换语言）。
+_UNIVERSITY_INSTR_BASE = (
+    "You are a university data extractor. Extract only facts present in the text. "
     "name_cn must be Simplified Chinese if present; otherwise omit and add to missing_fields. "
-    "country can be English name. Never fabricate. "
-    # 值层语言（中文输出修改意见 2026-07-05）：自由文本转简体中文，名称/URL 保原样（code 类前端另有映射）
-    "Output introduction, city, and each item of strength_subjects in Simplified Chinese. "
+    "country can be English name. Never fabricate; if not in the text, omit and add to missing_fields."
+)
+_UNIVERSITY_INSTR_ZH = (
+    " Output introduction, city, and each item of strength_subjects in Simplified Chinese. "
     "Keep name_en and official_website verbatim (name_cn is already Chinese)."
 )
-_PROGRAMME_INSTR = (
-    "You are a study-abroad master programme data extractor. Map direction to enum "
+_UNIVERSITY_INSTR_EN = (
+    " Output free-text fields (introduction, city, strength_subjects) in the source's original "
+    "language; do not translate. Keep name_en and official_website verbatim."
+)
+
+_PROGRAMME_INSTR_BASE = (
+    "You are a master's programme data extractor. Map direction to enum "
     "(computer/computational/data science->cs, business/management->business, finance->finance, "
     "media/communication->media, law->law, engineering->engineering, science->science, "
     "social->social_science, art/design->art, education->education, else->other). "
     "Convert IELTS scores to numbers; none/not-required->null. "
-    "gre_gmat_requirement use not_required/optional/required. Extract only facts in the text; never fabricate. "
-    # 值层语言（中文输出修改意见 2026-07-05）：选择性把自由文本转简体中文，数字/名称/枚举码/URL 严格保原样
-    "Output the VALUES of these fields in Simplified Chinese (faithful translation/summary): "
+    "gre_gmat_requirement use not_required/optional/required. "
+    "Extract only facts in the text; never fabricate; if not in the text, omit and add to missing_fields."
+)
+_PROGRAMME_INSTR_ZH = (
+    " Output the VALUES of these fields in Simplified Chinese (faithful translation/summary): "
     "programme_intro, academic_requirement, language_note, faculty. "
     "PRESERVE EXACTLY (do not alter when translating): all numbers, IELTS/GPA scores, dates, "
     "currency amounts, and proper names. "
     "For tuition_label and deadline_label: keep numbers/dates/currency verbatim, surrounding words may be Chinese. "
     "Keep VERBATIM / do NOT translate: name (official English name), degree, direction, study_mode, "
     "gre_gmat_requirement, min_grade_band codes (e.g. \"2:1\" / \"WAM 65%\"), "
-    "ielts_total, ielts_sub_min, tuition_fee, official_url. "
-    "Never fabricate; if not in the text, omit and add to missing_fields."
+    "ielts_total, ielts_sub_min, tuition_fee, official_url."
+)
+_PROGRAMME_INSTR_EN = (
+    " Output free-text fields (programme_intro, academic_requirement, language_note, faculty, "
+    "tuition_label, deadline_label) in the source's original language; do not translate. "
+    "Keep all numbers, scores, dates, currency, proper names, enum codes and URLs verbatim."
 )
 
 
-def schema_provider(ttype):
-    if ttype == "university":
-        return _UNIVERSITY_SCHEMA, _UNIVERSITY_INSTR
-    return _PROGRAMME_SCHEMA, _PROGRAMME_INSTR
+def make_schema_provider(lang="en"):
+    """按 --lang 组装 (schema, instructions) 的闭包；scheduler 仍以 schema_provider(ttype) 调用。
+
+    lang=en（默认）自由文本保源语言原样；lang=zh 自由文本转简体中文（数字/名称/枚举码/URL 仍保原样）。
+    """
+    lang = "zh" if str(lang).lower() == "zh" else "en"
+
+    def provider(ttype):
+        if ttype == "university":
+            tail = _UNIVERSITY_INSTR_ZH if lang == "zh" else _UNIVERSITY_INSTR_EN
+            return _UNIVERSITY_SCHEMA, _UNIVERSITY_INSTR_BASE + tail
+        tail = _PROGRAMME_INSTR_ZH if lang == "zh" else _PROGRAMME_INSTR_EN
+        return _PROGRAMME_SCHEMA, _PROGRAMME_INSTR_BASE + tail
+
+    return provider
 
 
 # —— run-report —— #
@@ -145,7 +171,7 @@ def write_run_report(results, meta, cfg, out_dir, elapsed_s):
     lines.append("")
     lines.append("## 逐目标")
     lines.append("")
-    lines.append("| # | 类型 | URL | tier_used | usable | 尝试 | 耗时 | confidence | import_rec | needs_manual 原因 |")
+    lines.append("| # | 类型 | URL | tier_used | usable | 尝试 | 耗时 | confidence | review | needs_manual 原因 |")
     lines.append("|---|---|---|---|---|---|---|---|---|---|")
     for i, r in enumerate(results, 1):
         t = r["target"]
@@ -159,7 +185,7 @@ def write_run_report(results, meta, cfg, out_dir, elapsed_s):
             i, t.get("type"), _cell(_short(t["url"])), f.get("tier_used") or "-",
             "✓" if f.get("usable") else "✗", f.get("attempts", 0),
             (f.get("ms_total", 0) / 1000.0), r.get("data_confidence", "-"),
-            r.get("import_recommendation", "-"), _cell(reason)))
+            r.get("review_status", "-"), _cell(reason)))
     lines.append("")
     lines.append("## 抓取档明细（tier_log）")
     lines.append("")
@@ -213,6 +239,10 @@ def main():
     ap.add_argument("--concurrency", type=int, default=None, help="全局并发，默认 8，clamp[1,32]")
     ap.add_argument("--resume", action="store_true", help="断点续跑（默认关）")
     ap.add_argument("--config", default=None, help="配置文件路径（默认 crawler.config.json）")
+    ap.add_argument("--profile", choices=["generic", "studycompass"], default=None,
+                    help="输出信封形态：generic（默认，通用）| studycompass（内部契约）。覆盖 config.output.profile")
+    ap.add_argument("--lang", choices=["en", "zh"], default=None,
+                    help="自由文本语言：en（默认，保原样）| zh（转简体中文）。覆盖 config.output.lang")
     args = ap.parse_args()
 
     from config import load_config, ConfigError
@@ -221,7 +251,8 @@ def main():
 
     # --concurrency 的 clamp 统一由 load_config 做（clamp 到 [min,max]，§11-J），此处不重复 clamp。
     try:
-        cfg = load_config(args.config, cli_concurrency=args.concurrency)
+        cfg = load_config(args.config, cli_concurrency=args.concurrency,
+                          cli_profile=args.profile, cli_lang=args.lang)
     except ConfigError as e:
         print("[配置错误] %s" % e, file=sys.stderr)
         sys.exit(2)
@@ -264,9 +295,10 @@ def main():
 
     for w in cfg.get("_warnings", []):
         print("[能力自检] %s" % w)
-    print("[启动] 目标 %d 个，并发 global=%d，抓取档 %s，抽取 %s，resume=%s" % (
+    schema_provider = make_schema_provider(cfg["output"]["lang"])
+    print("[启动] 目标 %d 个，并发 global=%d，抓取档 %s，抽取 %s，profile=%s，lang=%s，resume=%s" % (
         len(targets), cfg["concurrency"]["global"], cfg["_available_tiers"],
-        cfg["llm"].get("provider"), args.resume))
+        cfg["llm"].get("provider"), cfg["output"]["profile"], cfg["output"]["lang"], args.resume))
 
     t0 = time.time()
     results, meta = asyncio.run(
