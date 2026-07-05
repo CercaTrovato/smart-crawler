@@ -1,0 +1,378 @@
+# -*- coding: utf-8 -*-
+"""产物层：抽取结果 + 源信息 → 完整 submitCollectionResult 信封（契约 §11-B/C/F）。
+
+移植自 tools/collector/transform/university.js + programme.js：
+  - 严格白名单**正过滤**（白名单外一律丢弃，尤其 status/review_status/is_simulated/submitted_by/
+    is_platform_verified 等控制/运营字段，核心绝不产出——§11-B）。
+  - 别名映射（LLM 键名自由 → 目标白名单键名）。
+  - direction 枚举校验（不在枚举 → other + warning）。
+  - CJK 分流 name/name_cn。
+  - toNum（雅思/学费等）。
+  - official_url 从落地 URL 回填（§11-F：官网抓取时页面本身即官网页）。
+  - data_confidence 硬枚举 high|medium|low，由**源类型**定，落盘前 assert（§11-C）。
+  - contains_privacy 恒 false（§11-L）。
+  - 缺必填 → import_recommendation=manual_completion_required（§11-B/C，决策权仍在审核员）。
+
+task_id 不由核心背（§11-B）——投喂前另跑 createCollectionTask，本层不产 task_id。
+"""
+import json
+import os
+import re
+import time
+
+CONF_ENUM = ("high", "medium", "low")
+DIRECTION_ENUM = [
+    "business", "finance", "cs", "media", "law",
+    "engineering", "science", "social_science", "art", "education", "other",
+]
+_CJK = re.compile(r"[一-鿿]")
+
+# 源类型 → data_confidence 硬映射（§11-C：官网=high、第三方结构源=medium、竞品聚合=low）。
+_SOURCE_CONF = {
+    "official": "high",
+    "official_website": "high",
+    "third_party_education_site": "medium",
+    "wikidata": "medium",
+    "wikipedia": "medium",
+    "competitor_aggregator": "low",
+    "compassedu": "low",
+}
+
+# 国家关键词（移植 country.js）。
+_COUNTRY_KW = [
+    (re.compile(r"\b(united kingdom|u\.?k\.?|england|scotland|wales|northern ireland|britain|british)\b", re.I), "uk"),
+    (re.compile(r"\bhong kong\b", re.I), "hk"),
+    (re.compile(r"\bsingapore\b", re.I), "sg"),
+    (re.compile(r"\b(united states|u\.?s\.?a?\.?|america)\b", re.I), "us"),
+    (re.compile(r"\baustralia\b", re.I), "au"),
+    (re.compile(r"\bcanada\b", re.I), "ca"),
+    (re.compile(r"\b(japan|south korea|korea)\b", re.I), "jpkr"),
+    (re.compile(r"\b(china|chinese)\b", re.I), "cn"),
+]
+
+
+def _country_from_text(text):
+    s = str(text or "")
+    for rx, code in _COUNTRY_KW:
+        if rx.search(s):
+            return code
+    return ""
+
+
+def _to_num(v):
+    if v is None or v == "":
+        return None
+    m = re.sub(r"[^\d.]", "", str(v))
+    try:
+        n = float(m)
+        return n if n == n and n not in (float("inf"), float("-inf")) else None
+    except ValueError:
+        return None
+
+
+_TOKEN_SPLIT_RE = re.compile(r"[^0-9a-z]+|(?<=[a-z])(?=[0-9])|(?<=[0-9])(?=[a-z])")
+
+
+def _key_tokens(key):
+    """键名 → token 集：按 `_`/非字母数字 与 驼峰边界切分（ethnicity 不含 city token）。"""
+    # 先在驼峰边界插分隔（HelloWorld → Hello World），再按非字母数字/数字边界切，最后小写。
+    spaced = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", str(key))
+    parts = _TOKEN_SPLIT_RE.split(spaced.lower())
+    return {p for p in parts if p}
+
+
+def _pick(obj, exact_keys, fuzzy_parts=None):
+    """按候选键名（精确）+ 关键词（模糊）取值（移植 programme.js pick）。
+
+    fuzzy 用 token 边界匹配（§11 修 🟡6）：要求每个 fuzzy_part 命中键名的**完整 token**，
+    而非子串——避免 'city' 误伤 'ethnicity'、'fee' 误伤 'coffee' 等。
+    """
+    for k in exact_keys:
+        if obj.get(k) not in (None, ""):
+            return obj[k]
+    if fuzzy_parts:
+        for k in obj.keys():
+            toks = _key_tokens(k)
+            if all(p in toks for p in fuzzy_parts) and obj.get(k) not in (None, ""):
+                return obj[k]
+    return None
+
+
+def _conf_from_source(source_type):
+    """源类型 → 硬枚举 confidence（§11-C，丢弃 LLM 自报置信度）。"""
+    return _SOURCE_CONF.get(str(source_type or "").lower(), "medium")
+
+
+def _clean_item(item):
+    """剔空字段（空串/None 不塞，保持 item 干净；白名单外字段本就不在）。"""
+    return {k: v for k, v in item.items() if v not in ("", None)}
+
+
+# —— 院校信封（移植 university.js） —— #
+
+def _build_university(raw, target, source_type, final_url):
+    missing = []
+    warnings = []
+
+    # name_cn（必填）：优先简体；无中文→缺（不拿英文冒充）。
+    name_cn = ""
+    cand_zh = _pick(raw, ["name_zh_hans", "name_cn", "name_zh"], ["name", "cn"]) or ""
+    if cand_zh and _CJK.search(str(cand_zh)):
+        name_cn = str(cand_zh).strip()
+    if not name_cn:
+        missing.append("name_cn")
+        warnings.append({"warning_type": "missing_required",
+                         "message": "未抽到中文校名，name_cn 缺，需人工补"})
+
+    name_en = _pick(raw, ["name_en", "name", "official_name"], ["name", "en"]) or ""
+
+    # country（必填）：从描述/英文名解析；hint 兜底且留痕。
+    country = _country_from_text(_pick(raw, ["country", "description", "intro", "introduction"], ["country"])) \
+        or _country_from_text(name_en)
+    if not country:
+        hint = target.get("hint")
+        if hint:
+            hc = _country_from_text(hint) or (str(hint).lower() if str(hint).lower() in
+                                              ("uk", "hk", "sg", "us", "au", "ca", "cn", "jpkr") else "")
+            if hc:
+                country = hc
+                warnings.append({"warning_type": "country_from_hint",
+                                 "message": "country 取自 hint（人工补，非采集），需人工核"})
+    if not country:
+        missing.append("country")
+
+    city = _pick(raw, ["city"], ["city"]) or ""
+    if not city:
+        missing.append("city")
+
+    item = {
+        "name_cn": name_cn,
+        "name_en": name_en,
+        "country": country,
+        "city": (str(city).strip() if city else ""),
+        "introduction": (str(_pick(raw, ["introduction", "intro", "summary"], ["intro"]) or "")[:500]),
+        "ranking_band": _pick(raw, ["ranking_band"], ["ranking", "band"]) or "",
+        "qs_rank_label": _pick(raw, ["qs_rank_label", "qs_rank"], ["qs"]) or "",
+        "strength_subjects": _norm_subjects(_pick(raw, ["strength_subjects", "subjects"], ["strength", "subject"])),
+        # §11-F：官网抓取时落地 URL 本身即官网页，从 URL 直接回填。
+        "official_website": _pick(raw, ["official_website", "official_url", "website"], ["official", "website"])
+        or final_url or "",
+        "data_confidence": _conf_from_source(source_type),
+        "data_source_url": final_url or _pick(raw, ["data_source_url"], []) or "",
+    }
+    item = _clean_item(item)
+
+    blocked = ("name_cn" in missing) or ("country" in missing)
+    return item, warnings, missing, blocked, (name_en or target.get("target_name") or name_cn)
+
+
+def _norm_subjects(v):
+    if isinstance(v, (list, tuple)) and len(v):
+        return [str(x).strip() for x in v if str(x).strip()][:6]
+    return None
+
+
+# —— 项目信封（移植 programme.js） —— #
+
+def _build_programme(raw, target, source_type, final_url):
+    missing = []
+    warnings = []
+
+    # name/name_cn：收集所有"项目名"候选（排除院校名/简介/要求），按是否含中文分流。
+    name = None
+    name_cn = None
+    for k, v in raw.items():
+        if not re.search(r"name|title|program|programme", k, re.I):
+            continue
+        if re.search(r"school|univ|college|institution", k, re.I):
+            continue
+        if re.search(r"intro|summary|category|description|note|requirement|faculty", k, re.I):
+            continue
+        if not isinstance(v, str) or not v.strip():
+            continue
+        if _CJK.search(v):
+            if not name_cn:
+                name_cn = v.strip()
+        else:
+            if not name:
+                name = v.strip()
+
+    direction = _pick(raw, ["direction", "major_direction", "field"], ["direction"])
+    if direction and str(direction).lower() not in DIRECTION_ENUM:
+        warnings.append({"warning_type": "direction_not_enum",
+                         "message": 'direction "%s" 不在枚举内，落为 other，需人工核' % direction})
+        direction = "other"
+    elif direction:
+        direction = str(direction).lower()
+
+    # university_id：采集项目时父院校已知，由 target 提供（本系统 target 里带 university_id）。
+    university_id = target.get("university_id")
+    if not name:
+        missing.append("name")
+    if not direction:
+        missing.append("direction")
+    if not university_id:
+        missing.append("university_id")
+        warnings.append({"warning_type": "no_parent",
+                         "message": "缺 university_id，物化前须先有 published 父院校并回填"})
+
+    item = {
+        "university_id": university_id,
+        "name": name,
+        "name_cn": name_cn,
+        "direction": direction,
+        "degree": _pick(raw, ["degree", "degree_type"], ["degree"]),
+        "programme_category": _pick(raw, ["programme_category", "project_category", "category"], ["category"]),
+        "faculty": _pick(raw, ["faculty", "school", "department"], ["faculty"]),
+        "duration": _normalize_duration(_pick(raw, ["duration", "length"], ["duration"])),
+        "study_mode": _pick(raw, ["study_mode"], ["study", "mode"]),
+        "programme_intro": _pick(raw, ["programme_intro", "intro", "summary", "description"], ["intro"]),
+        "academic_requirement": _pick(
+            raw, ["academic_requirement", "application_requirements", "entry_requirements", "requirements"],
+            ["requirement"]),
+        "min_grade_band": _pick(raw, ["min_grade_band", "gpa_requirement", "grade"], ["grade"]),
+        "language_note": _pick(raw, ["language_note", "language_requirement"], ["language", "note"]),
+        "ielts_total": _to_num(_pick(raw, ["ielts_total", "ielts_overall", "ielts"], ["ielts", "total"])),
+        "ielts_sub_min": _to_num(_pick(raw, ["ielts_sub_min", "ielts_subscore", "ielts_sub"], ["ielts", "sub"])),
+        "tuition_fee": _to_num(_pick(raw, ["tuition_fee"], ["tuition", "fee", "amount"])),
+        "tuition_label": _pick(raw, ["tuition_label", "tuition", "tuition_fee_label", "fee"], ["tuition"]),
+        "deadline_label": _pick(raw, ["deadline_label", "application_deadline", "deadline"], ["deadline"]),
+        # 'gre' 不用 fuzzy（会误匹配 deGREe）
+        "gre_gmat_requirement": _pick(raw, ["gre_gmat_requirement", "gre_gmat", "gre", "gmat"], None),
+        # §11-F：官网采集时页面本身即官网页。
+        "official_url": _pick(raw, ["official_url", "programme_url", "url"], ["official", "url"]) or final_url or "",
+        "data_confidence": _conf_from_source(source_type),
+        "data_source_url": final_url or _pick(raw, ["data_source_url"], []) or "",
+    }
+    item = _clean_item(item)
+
+    # 补记建议字段缺失（告知审核员采集未拿到）
+    for f in ("official_url", "ielts_sub_min", "min_grade_band", "deadline_label"):
+        if item.get(f) is None and f not in missing:
+            missing.append(f)
+    # 合并 LLM 自报 missing
+    raw_missing = raw.get("missing_fields")
+    if isinstance(raw_missing, list):
+        for f in raw_missing:
+            if f not in missing:
+                missing.append(f)
+
+    blocked = (not name) or (not direction)
+    return item, warnings, missing, blocked, (name or target.get("target_name") or name_cn or "")
+
+
+def _normalize_duration(raw):
+    """学制规范化（移植 i18n.js normalizeDuration）："12 Months (Full time)" → "1 年（全日制）"。"""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    if _CJK.search(s):
+        return s
+    ft = "（全日制）" if re.search(r"full[\s-]*time", s, re.I) else (
+        "（非全日制）" if re.search(r"part[\s-]*time", s, re.I) else "")
+    mm = re.search(r"(\d+)\s*months?", s, re.I)
+    if mm:
+        n = int(mm.group(1))
+        base = ("%d 年" % (n // 12)) if n % 12 == 0 else ("%d 个月" % n)
+        return base + ft
+    my = re.search(r"(\d+(?:\.\d+)?)\s*years?", s, re.I)
+    if my:
+        return ("%s 年" % my.group(1)) + ft
+    return s
+
+
+# —— 顶层组装 —— #
+
+def build_envelope(extraction, target, source_type, final_url, fetch_meta=None):
+    """把抽取结果 + 源信息组装为 submitCollectionResult 信封。
+
+    extraction：extract() 返回的原始字段对象（可能含 __extract_error__）。
+    target：{url,type,hint?,university_id?,target_name?}
+    source_type：源类型（决定 data_confidence 硬枚举）。
+    final_url：落地 URL（官网字段/来源回填）。
+    fetch_meta：{tier_used, ms_total, needs_manual, reason...}（进 agent_notes/raw_evidence）。
+    """
+    fetch_meta = fetch_meta or {}
+    ttype = target.get("type", "programme")
+    extract_error = extraction.get("__extract_error__") if isinstance(extraction, dict) else None
+    # 抽取失败 → 降级：raw 视为空，全字段进 missing（output 层负责，绝不编造 §11-H）
+    raw = {} if extract_error else (extraction if isinstance(extraction, dict) else {})
+
+    src_lang = "en"  # 本系统 targets 主为英文官网页；两类型同为 en。
+    if ttype == "university":
+        item, warnings, missing, blocked, target_name = _build_university(raw, target, source_type, final_url)
+        task_type = "collect_universities"
+    else:
+        item, warnings, missing, blocked, target_name = _build_programme(raw, target, source_type, final_url)
+        task_type = "collect_programmes"
+
+    if extract_error:
+        warnings.append({"warning_type": "extract_degraded",
+                         "message": "抽取降级（%s）：未抽到结构化字段，全部计入 missing_fields，未编造" % extract_error})
+
+    # data_confidence 硬枚举，落盘前 assert（§11-C）
+    conf = _conf_from_source(source_type)
+    assert conf in CONF_ENUM, "data_confidence 非法：%r（防后台兜底成 simulated 永久卡审）" % conf
+
+    agent_notes = (
+        "smart-crawler 采集：tier=%s，尝试 %s 次，源类型=%s。"
+        % (fetch_meta.get("tier_used"), fetch_meta.get("attempts"), source_type)
+    )
+    if extract_error:
+        agent_notes += "（抽取降级：%s）" % extract_error
+    agent_notes += " 字段经严格白名单正过滤 + 别名映射归一；抽不到进 missing_fields，未编造；以官网为准。"
+
+    envelope = {
+        "task_type": task_type,
+        "target_name": target_name or "",
+        "source_summary": {
+            "primary_source_url": final_url or "",
+            "source_type": source_type,
+            "source_language": src_lang,
+            "source_accessible": bool(final_url),
+        },
+        "data_confidence": conf,
+        "items": [item],
+        "warnings": warnings,
+        "conflicts": [],
+        "missing_fields": missing,
+        "raw_evidence": _build_evidence(final_url, fetch_meta),
+        "contains_privacy": False,  # §11-L：产物恒 false（仅公开事实）
+        # §11-B/C：必填齐→交审核员；必填缺→manual_completion_required（决策权仍在审核员，rule14）
+        "import_recommendation": "manual_completion_required" if blocked else "recommend_manual_review",
+        "agent_notes": agent_notes,
+    }
+    _assert_no_control_fields(envelope)
+    return envelope
+
+
+def _build_evidence(final_url, fetch_meta):
+    ev = []
+    if final_url:
+        ev.append({"source_url": final_url, "fetched_via": fetch_meta.get("tier_used"),
+                   "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    return ev
+
+
+# 控制/运营字段黑名单——核心绝不产出（§11-B）。白名单正过滤已天然焊死，这里是落盘前双保险断言。
+_FORBIDDEN_ITEM_FIELDS = (
+    "status", "review_status", "is_simulated", "submitted_by",
+    "is_platform_verified", "_id", "moderation_status", "verification_status",
+)
+
+
+def _assert_no_control_fields(envelope):
+    for it in envelope.get("items", []):
+        for f in _FORBIDDEN_ITEM_FIELDS:
+            assert f not in it, "产物 item 含控制/运营字段 '%s'（核心绝不产出，§11-B）" % f
+
+
+def write_payload(envelope, out_dir, task_key):
+    """落盘 out/payload-*.json。返回文件路径。"""
+    os.makedirs(out_dir, exist_ok=True)
+    safe = re.sub(r"[^0-9A-Za-z._-]", "_", task_key)[:80]
+    fname = "payload-%s-%s.json" % (safe, time.strftime("%Y%m%d-%H%M%S"))
+    path = os.path.join(out_dir, fname)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(envelope, f, ensure_ascii=False, indent=2)
+    return path

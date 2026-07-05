@@ -1,0 +1,10 @@
+[
+  {"url": "https://en.wikipedia.org/wiki/University_of_Leeds", "type": "university"},
+  {"url": "https://en.wikipedia.org/wiki/University_of_Manchester", "type": "university"},
+  {"url": "https://en.wikipedia.org/wiki/University_of_Edinburgh", "type": "university"},
+  {"url": "https://en.wikipedia.org/wiki/University_of_Oxford", "type": "university"},
+  {"url": "https://en.wikipedia.org/wiki/University_of_Cambridge", "type": "university"},
+  {"url": "https://en.wikipedia.org/wiki/University_of_Bristol", "type": "university"},
+  {"url": "https://en.wikipedia.org/wiki/University_of_Warwick", "type": "university"},
+  {"url": "https://en.wikipedia.org/wiki/University_of_Glasgow", "type": "university"}
+]

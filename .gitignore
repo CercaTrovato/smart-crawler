@@ -1,0 +1,12 @@
+# 运行产物/状态/密钥一律不入库
+out/
+state.json
+domain-memory.json
+run-report*.md
+.env
+crawler.config.json
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.log

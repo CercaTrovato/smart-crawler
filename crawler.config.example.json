@@ -1,0 +1,17 @@
+{
+  "_comment": "机器画像A（有 codex + Firecrawl）。画像B见 setup.md：tiers 去掉 firecrawl、llm 改 openai-compat。凭据只写 env 变量名，绝不含明文。",
+  "fetch": {
+    "tiers": ["http-tls", "browser", "firecrawl"],
+    "http-tls": { "impersonate": "chrome" },
+    "firecrawl": { "apiKeyEnv": "FIRECRAWL_API_KEY", "proxy": "stealth", "proxyForApiEnv": "FIRECRAWL_PROXY" }
+  },
+  "llm": {
+    "provider": "codex",
+    "_openai_compat_example": { "provider": "openai-compat", "baseUrlEnv": "LLM_BASE_URL", "model": "qwen2.5", "apiKeyEnv": "LLM_API_KEY", "jsonMode": "openai_schema", "timeoutMs": 60000, "maxRetry": 2 }
+  },
+  "concurrency": { "global": 8, "min": 1, "max": 32, "browserCap": 4, "firecrawlCap": 2 },
+  "politeness": { "perDomain": 2, "minDelayMs": 1500 },
+  "retry": { "perTier": 2, "backoffMs": 1500, "maxAttemptsPerTarget": 6 },
+  "firecrawlBudget": { "maxCredits": 200 },
+  "network": { "bypassProxyForFetch": true }
+}
