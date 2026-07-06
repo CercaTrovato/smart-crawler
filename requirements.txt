@@ -1,4 +1,4 @@
-# smart-crawler 依赖（Python 3.10+，Windows 优先）
+# smart-crawler 依赖（Python 3.11+，Windows 优先）
 # Scrapling 一库带来三档 fetch：curl_cffi(TLS伪装) / playwright / patchright(隐身)
 scrapling[fetchers]>=0.4.9
 # 抽取 openai-compat 后端用（codex 后端走外部 CLI，无需此依赖）

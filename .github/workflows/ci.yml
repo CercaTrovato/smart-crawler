@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # scoring.py 用了 possessive 量词 <[^>]{0,4096}+>（Python 3.11+）；故最低 3.11。
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Stub `codex` on PATH
+        # 测试只做 shutil.which("codex") 的能力自检，不真跑 codex；放一个空桩即可让 config 自检通过。
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/codex"
+          chmod +x "$HOME/.local/bin/codex"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run test suites
+        run: |
+          python _test_public.py
+          python _test_qc_regression.py
+          python _test_worker_isolation.py

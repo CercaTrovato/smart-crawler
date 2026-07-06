@@ -25,7 +25,7 @@ The system **automatically** starts on ① and only escalates — don't force br
 
 ## Install
 
-Requires Python **3.10+** (a hard requirement of scrapling).
+Requires Python **3.11+** (scrapling itself needs 3.10+, but this project's `scoring.py` uses a possessive-quantifier regex that requires 3.11+).
 
 ```bash
 git clone https://github.com/CercaTrovato/smart-crawler.git && cd smart-crawler

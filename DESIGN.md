@@ -167,7 +167,7 @@ mark needs_manual(url, 最后原因)          // 绝不假成功
 
 **H. 场景B 抽取水密（🟡）**：openai-compat config 增 `timeoutMs/jsonMode(openai_schema|ollama_format|plain)/maxRetry`；抽取失败**必降级**（退 CSS-only + missing_fields，禁编造）；文档诚实标注"本地弱模型严格出 schema 未验证，期一保通链路+降级、不保证抽全字段"；移植 `transform/*.js` 的别名映射+枚举校验+CJK 分流 name/name_cn+toNum。
 
-**I. 环境/setup（🟡）**：Windows-first（不假装跨 OS，Linux/mac 期二 best-effort）；Python 3.10+ 硬要求；`scrapling install` 下 Chromium+patchright ~150MB+；**用环境内 python 直调、禁 `conda run`**（卡交互）；入口设 `WindowsProactorEventLoopPolicy`；`bypassProxyForFetch` 对**所有抓取档**（Playwright 传 `proxy=direct://`），仅 Firecrawl **API 调用**走 `FIRECRAWL_PROXY`。
+**I. 环境/setup（🟡）**：Windows-first（不假装跨 OS，Linux/mac 期二 best-effort）；Python 3.11+ 硬要求（scoring.py 用 possessive 正则）；`scrapling install` 下 Chromium+patchright ~150MB+；**用环境内 python 直调、禁 `conda run`**（卡交互）；入口设 `WindowsProactorEventLoopPolicy`；`bypassProxyForFetch` 对**所有抓取档**（Playwright 传 `proxy=direct://`），仅 Firecrawl **API 调用**走 `FIRECRAWL_PROXY`。
 
 **J. CLI（🟡）**：`--concurrency` 默认 8、clamp[1,32]；`--targets` = 带类型 JSON `[{url,type:'university'|'programme',hint?}]`；`--resume` 默认关。
 

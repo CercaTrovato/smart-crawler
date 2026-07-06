@@ -24,7 +24,7 @@ description: |
 **本系统不依赖任何需要单独 clone 的开源爬虫项目**——全部抓取能力由一个 pip 包 `scrapling` 提供（内含 curl_cffi + Playwright + patchright）。agent 按下面装齐即可：
 
 **A. 必装（所有画像）**
-1. Python **3.10+**（Scrapling 硬要求）。
+1. Python **3.11+**（scrapling 要求 3.10+，本项目 `scoring.py` 用了 3.11+ 的 possessive 正则）。
 2. `<env-python> -m pip install -r requirements.txt`（= `scrapling[fetchers]` + `httpx`，仅此两个第三方包）。
 3. `<env-python 所在 venv>\Scripts\scrapling install`（下 Chromium + patchright 浏览器，约 150MB）。
 > 上面 1-3 一条命令搞定：`setup.ps1`（Windows）/ `setup.sh`（Linux/mac），自动建 `.venv`。

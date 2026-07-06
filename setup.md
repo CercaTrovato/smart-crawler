@@ -1,7 +1,7 @@
 # smart-crawler setup（Windows 优先；Linux/mac 期二 best-effort）
 
-## 1. Python 环境（3.10+ 硬要求 —— Scrapling 依赖 match/case 等）
-用 conda 或 venv 建一个 3.10+ 环境。**建完一律用"环境内 python 直调"，勿用 `conda run`（实测会卡交互提示挂住）。**
+## 1. Python 环境（3.11+ 硬要求 —— scrapling 要求 3.10+，scoring.py 用 3.11+ possessive 正则）
+用 conda 或 venv 建一个 3.11+ 环境。**建完一律用"环境内 python 直调"，勿用 `conda run`（实测会卡交互提示挂住）。**
 ```
 conda create -n smart-crawler python=3.11 -y
 # 记下环境 python 绝对路径，如 D:\anaconda3\envs\smart-crawler\python.exe，下文记作 <PY>

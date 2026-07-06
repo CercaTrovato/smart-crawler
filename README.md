@@ -25,7 +25,7 @@
 
 ## 安装
 
-需 Python **3.10+**（scrapling 硬要求）。
+需 Python **3.11+**（scrapling 本身要求 3.10+，但本项目 `scoring.py` 用了 3.11+ 才支持的 possessive 量词正则）。
 
 ```bash
 git clone https://github.com/CercaTrovato/smart-crawler.git && cd smart-crawler
