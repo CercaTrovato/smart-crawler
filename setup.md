@@ -32,4 +32,4 @@ copy crawler.config.example.json crawler.config.json
 ## 注意（实测踩过的坑）
 - **本机 Clash fake-ip 代理会黑洞"直连抓取"**（Rust/Go 类客户端超时到保留段 IP）→ config `network.bypassProxyForFetch=true`（默认开），入口一次性清进程代理 env 并设 `NO_PROXY='*'`（Playwright/curl_cffi 直连穿透；实测传 `proxy=direct://` 反而 ERR_PROXY_CONNECTION_FAILED，已不传）。**唯独 Firecrawl 的 API 调用要走代理**（`FIRECRAWL_PROXY`）；**远程 openai-compat 抽取**若需代理见画像B 的 `proxyEnv`。
 - Windows + asyncio + Playwright：入口已设 `WindowsProactorEventLoopPolicy`。
-- 产物只落 `out/*.json`（通用信封）；投喂 `submitCollectionResult` 是**独立一步**（需先 createCollectionTask 拿 task_id），不由采集核心编排。
+- 产物只落 `out/*.json`（默认 generic 通用信封）；`--profile studycompass` 才产 `submitCollectionResult` 信封，其投喂（需先 createCollectionTask 拿 task_id）是留学指南针内部的**独立一步**，不由采集核心编排。

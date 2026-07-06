@@ -186,3 +186,21 @@ mark needs_manual(url, 最后原因)          // 绝不假成功
 **期二待办**：CSS 选择器注册表铺开、SKILL.md 打包、无-Firecrawl 降级打磨（代理池）、katana 发现层（换无代理网络）。
 
 **两路对抗自检修复（2026-07-05，§16 后）**：已落实 🔴 全局池饥饿→队列消费者模型（删 global_sem）、`_proxy_bypassed` 跨线程 env 竞态→run.py 启动一次性清理、HostLimiter minDelay 并发失效→锁内预留发射时刻、credit 不退/双扣→firecrawl 档不重试 + CreditGate.refund + 记忆档 credit denied 可回退；🟡 `_source_type_for` 默认第三方(medium 不高估)、`_pick` fuzzy 改 token 边界（防 city 误伤 ethnicity）、codex shell=False、state/memory 原子写盘 + 损坏告警、run.py type 校验、浏览器档显式 timeout；砍镀金 删 challenge 整条 / config 合并重复分支 / kw_ratio / engine·waitMs 死配置。
+
+---
+
+## 13. 公开化改造（2026-07-06 · 面向公开的通用工具）
+
+把本工具从「留学指南针专属」泛化为**面向公开的院校/项目采集工具**，§11 编码契约（红线不变量）不破。
+
+**输出双 profile**（`build_envelope(..., profile, lang)`，由 config `output.profile` 或 CLI `--profile` 决定）：
+- `generic`（默认，面向公开）：干净通用信封 `{target_name,type,source,data_confidence,items,missing_fields,warnings,evidence,contains_privacy,needs_manual,notes}`，无任何下游专属键。必填/阻塞判定放宽——university 只要有任一名称即可识别、programme 只要有 name；`name_cn`/`university_id` 视为可选（缺失只进 `missing_fields`，不阻塞、不告警）。
+- `studycompass`（`--profile studycompass`）：§11 的 `submitCollectionResult` 信封原样（`task_type`/`import_recommendation`/`source_summary`/`agent_notes`/`university_id` 父院校语义），行为与改造前**完全一致**——§11 契约对此 profile 继续生效。
+
+**自由文本语言 `--lang`**（config `output.lang`）：`en`（默认，自由文本保源语言原样）/ `zh`（转简体中文）。抽取指令拆 base（领域规则，语言无关）+ 语言尾（`make_schema_provider(lang)`）；`_normalize_duration` 跟 lang 走。**数字/分数/日期/货币/名称/枚举码/URL 两档一律保原样**，只切换自由文本字段的值。
+
+**去品牌**：`_SOURCE_CONF`/`_source_type_for` 去 compassedu 等竞品判定；country 内置码未命中回退 LLM 原文（全球院校不丢 country）；`name_cn` 缺失的 `missing_required` 警告仅 studycompass 产。优先级 **CLI > config `output.*` > 代码默认（generic/en）**——studycompass 部署只需在自己的 `crawler.config.json` 写 `output.profile=studycompass, lang=zh`，无需改调用。
+
+**测试**：新增 `_test_public.py`（36 项：双 profile/--lang/透传/回退/去品牌）；回归 `_test_qc_regression.py`（52 项）、`_test_worker_isolation.py` 全绿；真跑 smoke 2/2 usable（generic 默认、英文自由文本、`official_website` 无空格）。
+
+面向公开的用户文档见 `README.md` / `README.en.md`；输入输出字段规范见 `docs/OUTPUT-SCHEMA.md`。

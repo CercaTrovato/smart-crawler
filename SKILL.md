@@ -1,8 +1,8 @@
 ---
 name: smart-crawler
 description: |
-  采集海外院校/硕士项目的公开网页数据（院校简介/项目要求/学费/截止期/语言分等），产出结构化 JSON（可对齐 submitCollectionResult 契约）。
-  当需要「抓大学官网/项目页」「批量采集院校项目信息」「把某留学竞品公开页转成结构化数据」时用本技能。
+  采集院校/硕士项目的公开网页数据（院校简介/项目要求/学费/截止期/语言分等），产出结构化 JSON。
+  当需要「抓大学官网/项目页」「批量采集院校项目信息」「把院校/项目公开页转成结构化数据」时用本技能。
   它是一套「TLS 伪装 HTTP → 真浏览器 → Firecrawl 付费逃生」自适应升级的采集器，自带按域限流、断点续跑、按域记忆、失败标 needs_manual 不编造。
   不用于：登录后内容 / 逆向签名接口 / 抓个人隐私(PII)——这些是红线，禁止。
 ---
@@ -38,19 +38,21 @@ description: |
 - **诚实边界**：curl_cffi + Playwright 两档免费、实测覆盖约 8/9；**极少数"封数据中心 IP"的硬站只有 Firecrawl 住宅 stealth 能破**。配 Firecrawl → 站点覆盖 100%；不配 → 这类站产 `needs_manual`（如实标注、绝不假成功——这是能力边界，非代码缩水）。
 
 ## 怎么用
-1. 备目标清单 `targets.json`（带类型；`type` 只能 `programme`/`university`）：
+1. 备目标清单 `targets.json`（带类型；`type` 只能 `programme`/`university`），见 `targets.example.json`：
    ```json
    [{"url":"https://courses.leeds.ac.uk/.../data-science-msc","type":"programme"},
     {"url":"https://www.xxx.edu/about","type":"university"}]
    ```
 2. 跑（用 setup 建好的 `.venv` 里的 python，在本目录下；画像A 先在 shell 设 `FIRECRAWL_API_KEY`）：
    ```
-   .venv\Scripts\python.exe run.py --targets targets.json --concurrency 8    # Windows
-   .venv/bin/python run.py --targets targets.json --concurrency 8            # Linux/mac
+   .venv\Scripts\python.exe run.py --targets targets.example.json --concurrency 8    # Windows
+   .venv/bin/python run.py --targets targets.example.json --concurrency 8            # Linux/mac
    ```
    `--concurrency` 默认 8、夹在 [1,32]；断点续跑加 `--resume`。
-3. 产物：`out/payload-*.json`（每目标一份信封）+ `run-report.md`（每目标用了哪档/是否 usable/needs_manual 原因）。
-4. 解读：`usable` 的可用；`needs_manual` 的表示采集器没拿到/没确认（**从不编造**，缺字段进 `missing_fields`），转人工。
+   输出档 `--profile generic`（默认，通用信封）/ `studycompass`（内部 submitCollectionResult 契约）；
+   语言 `--lang en`（默认，自由文本保原样）/ `zh`（转简体中文）。二者也可写进 config 的 `output` 段。
+3. 产物：`out/payload-*.json`（每目标一份信封）+ `run-report.md`（每目标用了哪档/是否 usable/needs_manual 原因）。字段规范见 `docs/OUTPUT-SCHEMA.md`。
+4. 解读：`usable` 的可用；`needs_manual`（generic）/ `manual_completion_required`（studycompass）表示采集器没拿到/没确认（**从不编造**，缺字段进 `missing_fields`），转人工。
 
 ## 自适应策略（省 credit / 别乱升级）
 - 系统**自动**从最便宜档（curl_cffi）起跑，失败才升 browser，再失败才升 Firecrawl（付费）。**别手动强制全上浏览器/Firecrawl**——多数公开页第一档 1 秒就拿下。
