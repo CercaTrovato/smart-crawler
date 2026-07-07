@@ -41,48 +41,57 @@ def _strip_proxy_env_once():
 # —— 抽取 schema（供 codex/openai-compat；键名即 output 层别名映射的锚点） —— #
 
 _UNIVERSITY_SCHEMA = {
+    # 上游接口收紧为 OpenAI 严格结构化输出：required 须列全所有键 + 字段可空（未抽到=null）。
+    # output.py 已把 null/"" 视作缺失，故可空不破坏"不编造"链。
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "name_cn": {"type": "string", "description": "院校简体中文名"},
-        "name_en": {"type": "string", "description": "院校英文名"},
-        "country": {"type": "string", "description": "国家（英文或代码 uk/hk/sg/us/au）"},
-        "city": {"type": "string", "description": "所在城市"},
-        "introduction": {"type": "string", "description": "院校简介，<=500 字"},
-        "strength_subjects": {"type": "array", "items": {"type": "string"}, "description": "优势学科"},
-        "official_website": {"type": "string", "description": "官网 URL"},
+        "name_cn": {"type": ["string", "null"], "description": "院校简体中文名"},
+        "name_en": {"type": ["string", "null"], "description": "院校英文名"},
+        "country": {"type": ["string", "null"], "description": "国家（英文或代码 uk/hk/sg/us/au）"},
+        "city": {"type": ["string", "null"], "description": "所在城市"},
+        "introduction": {"type": ["string", "null"], "description": "院校简介，<=500 字"},
+        "strength_subjects": {"type": ["array", "null"], "items": {"type": "string"}, "description": "优势学科"},
+        "official_website": {"type": ["string", "null"], "description": "官网 URL"},
         "missing_fields": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["missing_fields"],
+    "required": ["name_cn", "name_en", "country", "city", "introduction",
+                 "strength_subjects", "official_website", "missing_fields"],
 }
 
 _PROGRAMME_SCHEMA = {
+    # 上游接口收紧为 OpenAI 严格结构化输出：required 须列全所有键 + 字段可空（未抽到=null）。
+    # output.py 已把 null/"" 视作缺失，故可空不破坏"不编造"链。
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "name": {"type": "string", "description": "项目英文名"},
-        "name_cn": {"type": "string", "description": "项目中文名"},
-        "degree": {"type": "string", "description": "学位 MSc/MA/MS/LLM"},
-        "direction": {"type": "string",
+        "name": {"type": ["string", "null"], "description": "项目英文名"},
+        "name_cn": {"type": ["string", "null"], "description": "项目中文名"},
+        "degree": {"type": ["string", "null"], "description": "学位 MSc/MA/MS/LLM"},
+        "direction": {"type": ["string", "null"],
                       "description": "方向枚举 business/finance/cs/media/law/engineering/science/social_science/art/education/other"},
-        "programme_category": {"type": "string"},
-        "faculty": {"type": "string", "description": "所属学院/系"},
-        "duration": {"type": "string", "description": "学制，如 '1 year' / '12 months'"},
-        "study_mode": {"type": "string", "description": "full-time/part-time"},
-        "programme_intro": {"type": "string", "description": "项目简介"},
-        "academic_requirement": {"type": "string", "description": "学术/入学要求"},
-        "min_grade_band": {"type": "string", "description": "最低成绩要求"},
-        "language_note": {"type": "string", "description": "语言要求说明"},
+        "programme_category": {"type": ["string", "null"]},
+        "faculty": {"type": ["string", "null"], "description": "所属学院/系"},
+        "duration": {"type": ["string", "null"], "description": "学制，如 '1 year' / '12 months'"},
+        "study_mode": {"type": ["string", "null"], "description": "full-time/part-time"},
+        "programme_intro": {"type": ["string", "null"], "description": "项目简介"},
+        "academic_requirement": {"type": ["string", "null"], "description": "学术/入学要求"},
+        "min_grade_band": {"type": ["string", "null"], "description": "最低成绩要求"},
+        "language_note": {"type": ["string", "null"], "description": "语言要求说明"},
         "ielts_total": {"type": ["number", "null"], "description": "雅思总分；无->null"},
         "ielts_sub_min": {"type": ["number", "null"], "description": "雅思小分要求；无->null"},
         "tuition_fee": {"type": ["number", "null"], "description": "学费数字"},
-        "tuition_label": {"type": "string", "description": "学费原文串"},
-        "deadline_label": {"type": "string", "description": "申请截止期"},
-        "gre_gmat_requirement": {"type": "string", "description": "not_required/optional/required"},
-        "official_url": {"type": "string", "description": "项目官网 URL"},
+        "tuition_label": {"type": ["string", "null"], "description": "学费原文串"},
+        "deadline_label": {"type": ["string", "null"], "description": "申请截止期"},
+        "gre_gmat_requirement": {"type": ["string", "null"], "description": "not_required/optional/required"},
+        "official_url": {"type": ["string", "null"], "description": "项目官网 URL"},
         "missing_fields": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["missing_fields"],
+    "required": ["name", "name_cn", "degree", "direction", "programme_category", "faculty",
+                 "duration", "study_mode", "programme_intro", "academic_requirement",
+                 "min_grade_band", "language_note", "ielts_total", "ielts_sub_min",
+                 "tuition_fee", "tuition_label", "deadline_label", "gre_gmat_requirement",
+                 "official_url", "missing_fields"],
 }
 
 # 抽取指令 = 领域规则（base，语言无关）+ 语言指令（--lang 决定）。
