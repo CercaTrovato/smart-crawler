@@ -30,8 +30,8 @@ def _extract_codex(text, schema, instructions, cfg):
         (instructions or "Extract fields from the <stdin> webpage text strictly per the JSON Schema.")
         + " CRITICAL: use EXACTLY the property names (keys) defined in the schema as the JSON keys —"
         + " do NOT rename, translate, abbreviate, or invent keys."
-        + " Output ONLY JSON matching the schema. Put any schema field not found in the text into"
-        + " missing_fields and omit that field. Never fabricate values."
+        + " Output ONLY JSON matching the schema. For any schema field not found in the text,"
+        + " set its value to null and add its key name to missing_fields. Never fabricate values."
     )
 
     tmpdir = None
@@ -43,10 +43,13 @@ def _extract_codex(text, schema, instructions, cfg):
         out_file = os.path.join(tmpdir, "out.json")
         with open(schema_file, "w", encoding="utf-8") as f:
             json.dump(schema, f, ensure_ascii=False)
+        # 抽字段是简单任务：降推理档（codex 默认 xhigh 又慢又贵，medium 足够）；可经 llm.reasoningEffort 调。
+        effort = str(llm.get("reasoningEffort", "medium"))
         # shell=False + 参数列表：避免 shell 注入面（prompt/schema 路径含引号/元字符时脆弱转义会破，🟡7）。
         cmd = [
             codex_exe, "exec", "--skip-git-repo-check", "--ephemeral",
             "-s", "read-only", "--color", "never",
+            "-c", "model_reasoning_effort=%s" % effort,
             "--output-schema", schema_file, "-o", out_file, prompt,
         ]
         proc = subprocess.run(
